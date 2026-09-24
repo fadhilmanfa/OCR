@@ -1,0 +1,27 @@
+# Dependensi Python KHUSUS bubble detector (YOLO). Tidak dibutuhkan kalau
+# fitur bubble dimatikan (BUBBLE_ENABLED=0) — app tetap jalan full-OCR.
+#
+# Windows: install torch CPU dulu biar ringan (~200MB, bukan bundle CUDA ~2GB):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r detector/requirements.txt
+#   python detector/download_model.py
+ultralytics>=8.2,<9
+
+# --- Engine OCR alternatif: comics_text_plus (FCENet + MASTER) ---
+# Dipakai oleh detector/ocr_comics.py via lib/ocrComicsPlus.ts.
+# TIDAK dibutuhkan kalau engine OCR = "tesseract" (default) — app tetap
+# jalan tanpa paket ini (bridge fallback ke Tesseract otomatis).
+#
+# PERINGATAN KONFLIK TORCH: comics-ocr==0.1.2 mem-pin torch==1.9.0 yang
+# SANGAT TUA dan kemungkinan bentrok dengan torch modern yang dipakai
+# ultralytics. Kalau instalasi gagal / saling menimpa:
+#   Opsi A (disarankan): buat venv/conda env TERPISAH khusus OCR komik,
+#           lalu arahkan via env COMICS_PYTHON=/path/ke/env/python
+#           (atau BUBBLE_PYTHON kalau COMICS_PYTHON kosong).
+#   Opsi B: pip install --no-deps comics-ocr lalu install manual
+#           mmcv-full/mmdet/mmocr versi yang cocok dengan torch kamu.
+# Lihat setup.cfg di github.com/gsoykan/comics_ocr untuk pin versi.
+comics-ocr>=0.1.2
+# Pillow dipakai bridge untuk baca ukuran gambar (sudah ikut via
+# dependency di atas, ditulis eksplisit biar jelas):
+Pillow>=9
