@@ -289,6 +289,7 @@ async function rereadGroup(
 // pemanggil (cropBubble). Return null untuk crop yang tidak terbaca.
 export async function ocrBubbleCrops(
   crops: Buffer[],
+  onProgress?: (done: number, total: number) => void,
 ): Promise<Array<{ text: string; conf: number } | null>> {
   if (!crops.length) return [];
   const worker = (await createWorker("eng", 1)) as unknown as RecognizeWorker;
@@ -307,6 +308,8 @@ export async function ocrBubbleCrops(
         out.push({ text, conf });
       } catch {
         out.push(null);
+      } finally {
+        onProgress?.(out.length, crops.length);
       }
     }
     return out;

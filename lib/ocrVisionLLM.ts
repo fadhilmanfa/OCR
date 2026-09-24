@@ -216,6 +216,7 @@ export async function ocrVisionLLM(image: Buffer | string): Promise<string> {
 // ---------------------------------------------------------------------------
 export async function ocrVisionBubbleCrops(
   crops: Buffer[],
+  onProgress?: (done: number, total: number) => void,
 ): Promise<Array<{ text: string; conf: number } | null>> {
   const out: Array<{ text: string; conf: number } | null> = new Array(
     crops.length,
@@ -227,6 +228,7 @@ export async function ocrVisionBubbleCrops(
   // posisi index-nya sendiri, jadi urutan tetap terjaga walau yang
   // selesai duluan acak.
   let next = 0;
+  let finished = 0;
   const workerCount = Math.min(MAX_CONCURRENCY, crops.length);
   const workers = Array.from({ length: workerCount }, async () => {
     while (true) {
@@ -237,6 +239,8 @@ export async function ocrVisionBubbleCrops(
       // Route tidak memfilter berdasarkan conf (hanya memakai text),
       // jadi angka ini tidak mempengaruhi hasil.
       out[i] = text ? { text, conf: 99 } : null;
+      finished++;
+      onProgress?.(finished, crops.length);
     }
   });
   await Promise.all(workers);

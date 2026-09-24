@@ -262,9 +262,11 @@ export async function translateOne(
 
 // Batch berurutan + jeda kecil biar tidak kena rate-limit Google.
 // Untuk openrouter: kirim per-chunk sekaligus (1 request per ~30 teks).
+// onProgress(done, total) dipanggil setiap ada kemajuan (untuk progress bar polling).
 export async function translateBatch(
   texts: string[],
   provider = "auto",
+  onProgress?: (done: number, total: number) => void,
 ): Promise<string[]> {
   if (provider === "openrouter") {
     const CHUNK = 30;
@@ -273,6 +275,7 @@ export async function translateBatch(
       const chunk = texts.slice(i, i + CHUNK);
       try {
         out.push(...(await openRouterTranslateMany(chunk)));
+        onProgress?.(out.length, texts.length);
       } catch {
         // Chunk gagal -> fallback per-teks supaya 1 baris gagal
         // tidak menggugurkan semuanya.
@@ -282,6 +285,7 @@ export async function translateBatch(
           } catch {
             out.push(t); // kembalikan asli
           }
+          onProgress?.(out.length, texts.length);
           await sleep(200);
         }
       }
@@ -296,6 +300,7 @@ export async function translateBatch(
       // Gagal total -> kembalikan teks asli supaya gambar tetap diproses.
       out.push(texts[i]);
     }
+    onProgress?.(out.length, texts.length);
     if (i < texts.length - 1) await sleep(250);
   }
   return out;

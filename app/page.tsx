@@ -1,21 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import { BookOpenText, Hourglass, ScanText, Sparkles } from "lucide-react";
+import { BookOpenText, ScanText, Sparkles } from "lucide-react";
 import UploadForm from "@/components/UploadForm";
 import Downloads from "@/components/Downloads";
 import PageCard from "@/components/PageCard";
-import type { ProcessResult } from "@/components/types";
+import JobProgressCard from "@/components/JobProgressCard";
+import type { JobProgress, ProcessResult } from "@/components/types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 
 export default function Home() {
   const [result, setResult] = useState<ProcessResult | null>(null);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<JobProgress | null>(null);
   const isError = status.startsWith("Gagal");
 
   return (
@@ -45,29 +46,12 @@ export default function Home() {
       <UploadForm
         onResult={setResult}
         onStatus={setStatus}
+        onProgress={setProgress}
         disabled={busy}
         setDisabled={setBusy}
       />
 
-      {busy && (
-        <Card>
-          <CardContent className="space-y-3 pt-6">
-            <div className="flex items-center gap-2 text-sm">
-              <Hourglass className="size-4 animate-spin" />
-              <span className="font-medium">Memproses…</span>
-              <span className="text-muted-foreground">
-                OCR bisa 10–60 detik per halaman
-              </span>
-            </div>
-            <Progress value={66} className="h-1.5" />
-            {status && (
-              <p role="status" className="text-muted-foreground text-xs">
-                {status}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {busy && <JobProgressCard progress={progress} status={status} />}
 
       {!busy && status && (
         <Alert variant={isError ? "destructive" : "default"}>

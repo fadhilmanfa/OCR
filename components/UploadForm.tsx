@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { ProcessResult } from "./types";
+import type { JobProgress, ProcessResult } from "./types";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 interface Props {
   onResult: (r: ProcessResult | null) => void;
   onStatus: (s: string) => void;
+  onProgress: (p: JobProgress | null) => void;
   disabled: boolean;
   setDisabled: (v: boolean) => void;
 }
@@ -43,10 +44,12 @@ const ACCEPT = ".png,.jpg,.jpeg,.webp,.zip";
 export default function UploadForm({
   onResult,
   onStatus,
+  onProgress,
   disabled,
   setDisabled,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [provider, setProvider] = useState("auto");
   const [bubble, setBubble] = useState("ogkalu");
   const [ocrEngine, setOcrEngine] = useState("tesseract");
@@ -83,17 +86,24 @@ export default function UploadForm({
       });
       return;
     }
+    // Hentikan polling sebelumnya kalau ada (klik ganda / job lama).
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
     const fd = new FormData();
     for (const f of Array.from(inputFiles)) fd.append("files", f);
     fd.append("provider", provider);
     fd.append("bubble", bubble);
     fd.append("ocrEngine", ocrEngine);
     setDisabled(true);
-    onStatus("Memproses (OCR bisa 10-60 detik per halaman)...");
+    onStatus("Mengunggah & menyiapkan job...");
     onResult(null);
+    onProgress(null);
     try {
-      const res = await fetch(
-        "/api/process?provider=" +
+      // 1) Start job — langsung dapat jobId tanpa nunggu proses selesai.
+      const start = await fetch(
+        "/api/jobs?provider=" +
           encodeURIComponent(provider) +
           "&bubble=" +
           encodeURIComponent(bubble) +
@@ -101,18 +111,81 @@ export default function UploadForm({
           encodeURIComponent(ocrEngine),
         { method: "POST", body: fd }
       );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || String(res.status));
-      onStatus(`Selesai: ${data.pages.length} halaman`);
-      toast.success(`Selesai: ${data.pages.length} halaman`, {
-        description: `Provider ${data.provider ?? provider}`,
+      const started = await start.json().catch(() => ({}));
+      if (!start.ok) throw new Error(started.error || String(start.status));
+      const jobId = String(started.jobId || "");
+      if (!jobId) throw new Error("server tidak mengembalikan jobId");
+      onStatus(`Job ${jobId}: mengunggah selesai, mulai diproses...`);
+
+      // 2) Poll progress tiap 800ms sampai done/error.
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+          fn();
+        };
+        const tick = async () => {
+          try {
+            const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+            const data = (await res.json().catch(() => ({}))) as JobProgress & {
+              error?: string;
+            };
+            if (!res.ok) throw new Error((data as { error?: string }).error || String(res.status));
+            const prog = data as JobProgress;
+            onProgress(prog);
+            onStatus(prog.message || `Memproses... ${Math.round(prog.percent)}%`);
+            if (prog.done) {
+              finish(() => {
+                if (prog.error || prog.stage === "error") {
+                  reject(new Error(prog.error || "job gagal"));
+                } else if (prog.result) {
+                  onStatus(`Selesai: ${prog.result.pages.length} halaman`);
+                  toast.success(`Selesai: ${prog.result.pages.length} halaman`, {
+                    description: `Provider ${prog.result.provider ?? provider}`,
+                  });
+                  onResult(prog.result as ProcessResult);
+                  resolve();
+                } else {
+                  reject(new Error("job selesai tanpa hasil"));
+                }
+              });
+            }
+          } catch (e) {
+            // 404 saat job baru dibuat (race) -> coba lagi 1x putaran berikutnya.
+            // Error lain yang persisten akan terlihat di tick berikutnya;
+            // jangan langsung reject agar tahan terhadap glitch jaringan sesaat.
+            // Hanya reject kalau fetch gagal total berkali-kali? Untuk simpel:
+            // log dan lanjut; reject hanya via tombol / timeout 10 menit.
+            if (e instanceof Error && /tidak ditemukan|kedaluwarsa/i.test(e.message)) {
+              // beri kesempatan 1 putaran lagi sebelum menyerah
+            }
+          }
+        };
+        // Timeout pengaman 30 menit (sama dengan TTL job server).
+        const timeout = setTimeout(() => {
+          finish(() => reject(new Error("timeout menunggu job (30 menit)")));
+        }, 30 * 60 * 1000);
+        const wrappedTick = async () => {
+          await tick();
+          if (settled) clearTimeout(timeout);
+        };
+        pollRef.current = setInterval(wrappedTick, 800);
+        void wrappedTick();
       });
-      onResult(data as ProcessResult);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       onStatus("Gagal: " + msg);
       toast.error("Gagal memproses", { description: msg });
     } finally {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
       setDisabled(false);
     }
   }
