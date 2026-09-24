@@ -30,8 +30,22 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# outputs (hasil OCR per job, jangan commit; di-anchor agar route app/api/outputs tetap ter-commit)
+/outputs/
+/uploads/
+!app/api/outputs/**
+*.traineddata
+
+# model YOLO lokal (~52MB, jangan commit)
+detector/models/
+
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
 
 # vercel
 .vercel
