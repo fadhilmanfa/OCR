@@ -17,8 +17,10 @@ app/
     outputs/[jobId]/[file]/route.ts  # GET file hasil (pengganti express.static)
 lib/
   ocr.ts        # sharp + tesseract.js
+  ocrComicsPlus.ts  # engine alternatif FCENet+MASTER via Python (opsional)
+  ocrVisionLLM.ts   # engine alternatif Vision LLM via OpenRouter (opsional)
   bubble.ts     # YOLO bubble via Python sidecar (sekali per job, fallback aman)
-  translate.ts  # Google gratis → MyMemory, opsional OpenCode
+  translate.ts  # auto (Google gratis → MyMemory), openrouter, opencode
   overlay.ts    # sharp composite SVG
 components/
   UploadForm.tsx  PageCard.tsx  Downloads.tsx  types.ts
@@ -38,6 +40,30 @@ npm run dev
 
 Buka: http://localhost:3000
 
+> File `.env` boleh dikosongkan total — default semua fitur jalan tanpa
+> key (translate gratis, OCR tesseract, bubble fallback aman). Isi hanya
+> variabel yang fiturnya dipakai; lihat tabel di bawah.
+
+## Konfigurasi env (`.env`)
+
+Salin dulu `copy .env.example .env`. Yang **wajib** hanya 1, sisanya
+opsional (ada default di kode). Cek status key di `/api/health`.
+
+| Variabel | Wajib? | Default | Keterangan |
+|---|---|---|---|
+| `OPENROUTER_API_KEY` | Ya, kalau provider `openrouter` / engine `vision_llm` | — | Ambil di openrouter.ai/keys |
+| `OPENROUTER_MODEL` | Tidak | `google/gemini-2.5-flash` | Model translate LLM |
+| `OPENROUTER_VISION_MODEL` | Tidak | `google/gemini-2.0-flash-001` | Model baca teks gambar |
+| `BUBBLE_ENABLED` | Tidak | `1` | `0` = matikan deteksi bubble total |
+| `BUBBLE_MODEL` | Tidak | `ogkalu` | `ogkalu` (barat+manga) / `psimera` (manga) |
+| `BUBBLE_PYTHON` | Tidak | otomatis `python`→`py`→`python3` | Path Python khusus bila perlu |
+| `BUBBLE_CONF` / `BUBBLE_IMGSZ` / `BUBBLE_MAX` | Tidak | `0.3` / `1024` / `40` | Tuning YOLO |
+| `OCR_ENGINE` | Tidak | `tesseract` | Default server-side; pilihan form per-request selalu menang |
+| `OPENCODE_URL` dkk | Ya, kalau provider `opencode` | `http://127.0.0.1:4096` | Butuh `opencode serve` jalan (legacy) |
+| `COMICS_*` | Ya, kalau engine `comics_text_plus` | lihat `.env.example` | Butuh venv Python 3.9 + checkpoint |
+
+Prioritas nilai per-request: **form → query URL (`?provider=&bubble=&ocrEngine=`) → env → default kode**.
+
 ## Cara pakai
 
 1. Pilih JPG/PNG (boleh banyak, maks 50) atau ZIP.
@@ -48,9 +74,9 @@ Buka: http://localhost:3000
 
 | Method | Endpoint | Keterangan |
 |---|---|---|
-| GET | `/api/health` | status + config OpenCode |
+| GET | `/api/health` | status + config OpenRouter/OpenCode (apakah key terpasang) |
 | POST | `/api/translate-text` | body `{ texts: string[], provider? }` |
-| POST | `/api/process?provider=auto&bubble=1` | multipart `files` (+ field `provider`/`bubble` opsional) |
+| POST | `/api/process?provider=auto&bubble=1&ocrEngine=tesseract` | multipart `files` (+ field `provider`/`bubble`/`ocrEngine` opsional, menang atas env) |
 | GET | `/api/outputs/<jobId>/<file>` | file hasil (png/zip/pdf) |
 
 Respons `pages[]` memuat `via` (`yolo-ogkalu` / `yolo-psimera` /
@@ -83,14 +109,9 @@ di-download ke `detector/models/`, git-ignored). Detail env: lihat
 
 Default `auto` memakai Google gratis + fallback MyMemory. `provider=opencode`
 memakai server OpenCode lokal: `POST {OPENCODE_URL}/api/experimental/generate`.
-
-Isi `.env` (lihat `.env.example`):
-
-| Variabel | Isi |
-|---|---|
-| `OPENCODE_URL` | URL `opencode serve`, default `http://127.0.0.1:4096` |
-| `OPENCODE_MODEL` | Opsional, kosongkan = default model |
-| `OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD` | Hanya kalau serve diproteksi password |
+Variabel env-nya lihat tabel di "Konfigurasi env" di atas
+(`OPENCODE_URL`, `OPENCODE_MODEL`, `OPENCODE_SERVER_USERNAME` /
+`OPENCODE_SERVER_PASSWORD` — password hanya kalau serve diproteksi).
 
 ```bat
 opencode auth login
@@ -111,7 +132,7 @@ Cek: http://localhost:3000/api/health
 
 ## Batasan v1 (sama seperti project lama)
 
-- Pembersihan = rect putih (bukan inpaint AI). Bagus untuk bubble putih komik barat.
+- Pembersihan = elips putih (bukan inpaint AI). Bagus untuk bubble putih komik barat.
 - OCR = Tesseract.js. Kandidat bentuk/confidence buruk dilewati. Huruf stilasi / SFX
   masih bisa terlewat — cek preview.
 - Translate Google gratis bisa rate-limit (sudah ada jeda + fallback).
