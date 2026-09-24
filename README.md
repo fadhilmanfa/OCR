@@ -52,7 +52,7 @@ opsional (ada default di kode). Cek status key di `/api/health`.
 | Variabel | Wajib? | Default | Keterangan |
 |---|---|---|---|
 | `OPENROUTER_API_KEY` | Ya, kalau provider `openrouter` / engine `vision_llm` | — | Ambil di openrouter.ai/keys |
-| `OPENROUTER_MODEL` | Tidak | `google/gemini-2.5-flash` | Model translate LLM |
+| `OPENROUTER_MODEL` | Tidak | `google/gemini-2.5-flash` | Model translate LLM (konten dewasa: lihat bawah) |
 | `OPENROUTER_VISION_MODEL` | Tidak | `google/gemini-2.0-flash-001` | Model baca teks gambar |
 | `BUBBLE_ENABLED` | Tidak | `1` | `0` = matikan deteksi bubble total |
 | `BUBBLE_MODEL` | Tidak | `ogkalu` | `ogkalu` (barat+manga) / `psimera` (manga) |
@@ -63,6 +63,22 @@ opsional (ada default di kode). Cek status key di `/api/health`.
 | `COMICS_*` | Ya, kalau engine `comics_text_plus` | lihat `.env.example` | Butuh venv Python 3.9 + checkpoint |
 
 Prioritas nilai per-request: **form → query URL (`?provider=&bubble=&ocrEngine=`) → env → default kode**.
+
+### Konten dewasa
+
+Sebagian model LLM menolak atau menyensor konten dewasa (hasil kosong /
+ditolak). Untuk komik dewasa, ganti modelnya ke `z-ai/glm-5.3-flash`:
+
+```bat
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=z-ai/glm-5.3-flash
+```
+
+Kalau memakai engine `vision_llm`, samakan juga model vision-nya:
+
+```bat
+OPENROUTER_VISION_MODEL=z-ai/glm-5.3-flash
+```
 
 ## Cara pakai
 
