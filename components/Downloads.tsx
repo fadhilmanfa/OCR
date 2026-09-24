@@ -1,24 +1,50 @@
+import { Download, FileArchive, FileText } from "lucide-react";
 import type { ProcessResult } from "./types";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
 export default function Downloads({ result }: { result: ProcessResult }) {
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="flex flex-wrap items-center gap-3">
-        <a href={result.zipUrl} download>
-          <button className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
-            Download ZIP
-          </button>
-        </a>
-        <a href={result.pdfUrl} download>
-          <button className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white">
-            Download PDF
-          </button>
-        </a>
-        <span className="text-xs text-zinc-500">
-          Job {result.jobId} · provider {result.provider} ·{" "}
-          {result.pages.length} halaman
-        </span>
-      </div>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Download className="size-4" />
+          Hasil siap diunduh
+        </CardTitle>
+        <CardDescription>
+          ZIP berisi semua gambar hasil + PDF gabungan per job.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex flex-wrap gap-2">
+            <Button asChild>
+              <a href={result.zipUrl} download>
+                <FileArchive />
+                Download ZIP
+              </a>
+            </Button>
+            <Button asChild variant="secondary">
+              <a href={result.pdfUrl} download>
+                <FileText />
+                Download PDF
+              </a>
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 sm:ml-auto">
+            <Badge variant="outline">Job {result.jobId}</Badge>
+            <Badge variant="secondary">{result.provider}</Badge>
+            <Badge>{result.pages.length} halaman</Badge>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
