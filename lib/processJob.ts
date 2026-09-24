@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs";
 import AdmZip from "adm-zip";
+import { createExtractorFromData } from "node-unrar-js";
 import PDFDocument from "pdfkit";
 import sharp from "sharp";
 import { ocrBubbleCrops, ocrEnglish, type BBox } from "@/lib/ocr";
@@ -19,6 +20,36 @@ export interface CollectedImage {
   buffer: Buffer;
 }
 
+// Ekstrak gambar dari buffer .rar (RAR4/RAR5, termasuk solid archive —
+// filter dipasang di level extractor tapi pemrosesan internal tetap
+// berurutan). RAR berpassword / multi-volume / rusak -> throw dengan
+// pesan ramah (ditangkap route menjadi 400, bukan 500).
+async function collectFromRar(archiveName: string, buffer: Buffer): Promise<CollectedImage[]> {
+  // Salin ke ArrayBuffer murni: Buffer punya byteOffset yang membingungkan WASM.
+  const copy = new Uint8Array(buffer.length);
+  copy.set(buffer);
+  const found: CollectedImage[] = [];
+  try {
+    const extractor = await createExtractorFromData({ data: copy.buffer as ArrayBuffer });
+    const arc = extractor.extract({
+      files: (h) => !h.flags.directory && isImgName(h.name),
+    });
+    for (const f of arc.files) {
+      if (!f.extraction || f.extraction.length === 0) continue;
+      // RAR bisa menyimpan path ala Windows (\) maupun Unix (/) — ambil basename manual.
+      const base = f.fileHeader.name.split(/[\\/]/).pop() || f.fileHeader.name;
+      found.push({ name: base, buffer: Buffer.from(f.extraction) });
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/password/i.test(msg)) {
+      throw new Error(`RAR "${archiveName}" terproteksi password (belum didukung).`);
+    }
+    throw new Error(`Gagal membaca RAR "${archiveName}" (${msg.slice(0, 120)}).`);
+  }
+  return found;
+}
+
 export async function collectImages(files: File[]): Promise<CollectedImage[]> {
   const out: CollectedImage[] = [];
   for (const f of files) {
@@ -31,6 +62,8 @@ export async function collectImages(files: File[]): Promise<CollectedImage[]> {
         if (e.isDirectory || !isImgName(e.entryName)) continue;
         out.push({ name: path.basename(e.entryName), buffer: e.getData() });
       }
+    } else if (ext === ".rar") {
+      out.push(...(await collectFromRar(name, buffer)));
     } else if (isImgName(name)) {
       out.push({ name, buffer });
     }

@@ -38,7 +38,7 @@ export default function Home() {
         <p className="text-muted-foreground max-w-2xl text-sm leading-relaxed md:text-[15px]">
           Upload <span className="font-medium text-foreground">JPG/PNG</span>{" "}
           (banyak file bisa) atau{" "}
-          <span className="font-medium text-foreground">ZIP</span> berisi
+          <span className="font-medium text-foreground">ZIP/RAR</span> berisi
           gambar. Teks asli dihapus (putih) lalu ditimpa Bahasa Indonesia.
         </p>
       </section>

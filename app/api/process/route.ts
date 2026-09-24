@@ -54,7 +54,7 @@ export async function POST(req: Request) {
     const images = await collectImages(limited);
     if (!images.length) {
       return NextResponse.json(
-        { error: "Upload JPG/PNG atau ZIP berisi gambar." },
+        { error: "Upload JPG/PNG/WEBP atau ZIP/RAR berisi gambar." },
         { status: 400 },
       );
     }

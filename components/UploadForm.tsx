@@ -39,7 +39,7 @@ interface Props {
   setDisabled: (v: boolean) => void;
 }
 
-const ACCEPT = ".png,.jpg,.jpeg,.webp,.zip";
+const ACCEPT = ".png,.jpg,.jpeg,.webp,.zip,.rar";
 
 export default function UploadForm({
   onResult,
@@ -82,7 +82,7 @@ export default function UploadForm({
     const inputFiles = inputRef.current?.files;
     if (!inputFiles || !inputFiles.length) {
       toast.error("Pilih file dulu", {
-        description: "Upload JPG/PNG (boleh banyak) atau ZIP berisi gambar.",
+        description: "Upload JPG/PNG (boleh banyak) atau ZIP/RAR berisi gambar.",
       });
       return;
     }
@@ -200,7 +200,7 @@ export default function UploadForm({
               Upload komik
             </CardTitle>
             <CardDescription>
-              JPG / PNG / WEBP (maks 50 file) atau ZIP. Preview & translate
+              JPG / PNG / WEBP (maks 50 file) atau ZIP/RAR. Preview & translate
               muncul otomatis setelah diproses.
             </CardDescription>
           </div>
@@ -261,7 +261,8 @@ export default function UploadForm({
                 key={`${f.name}-${f.size}-${i}`}
                 className="bg-muted/50 flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs"
               >
-                {f.name.toLowerCase().endsWith(".zip") ? (
+                {f.name.toLowerCase().endsWith(".zip") ||
+                f.name.toLowerCase().endsWith(".rar") ? (
                   <FileArchive className="size-4 shrink-0" />
                 ) : (
                   <FileImage className="size-4 shrink-0" />
