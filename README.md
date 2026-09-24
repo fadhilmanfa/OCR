@@ -121,6 +121,44 @@ Model: `ogkalu/comic-speech-bubble-detector-yolov8m` (Apache-2.0, ~52MB,
 di-download ke `detector/models/`, git-ignored). Detail env: lihat
 `detector/README.md`.
 
+## OCR comics_text_plus (opsional, setup manual)
+
+Engine alternatif FCENet (deteksi) + MASTER (rekognisi) untuk huruf komik
+yang gagal dibaca Tesseract. Dipilih via dropdown "OCR engine" di form.
+Kalau gagal (venv/checkpoint belum ada), otomatis fallback ke Tesseract.
+
+Berbeda dengan model bubble (satu script download), engine ini **tidak
+bisa one-click install**: butuh venv Python 3.9 terpisah (comics-ocr pin
+`torch==1.9` yang tidak kompatibel dengan Python 3.12 / torch modern
+milik YOLO — jangan dicampur satu env).
+
+Langkah (Windows, sekali saja):
+
+```bat
+py -3.9 -m venv C:\venvs\comics
+C:\venvs\comics\Scripts\activate
+pip install torch==1.9.0+cpu torchvision==0.10.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
+pip install comics-ocr Pillow
+```
+
+> Daftar versi yang terbukti jalan ada di
+> `detector/requirements-comics-py39.txt` (hasil `pip freeze`, bukan file
+> install — baca header-nya dulu karena ada pin yang harus dipasang manual).
+
+Download checkpoint dari folder Google Drive di README repo
+`github.com/gsoykan/comics_text_plus`, taruh di
+`detector/models/comics_text_plus/` dengan nama file fine-tune aslinya.
+Kalau Drive-nya terkunci, pakai bobot dasar publik (`*_base-*.pth`) +
+arahkan 2 env ini ke file tersebut. Lalu isi `.env`:
+
+```bat
+COMICS_PYTHON=C:\venvs\comics\Scripts\python.exe
+COMICS_DET_CKPT=detector/models/comics_text_plus/fcenet_r50dcnv2_fpn_1500e_ctw1500_base-e326d7ec.pth
+COMICS_RECOG_CKPT=detector/models/comics_text_plus/master_r31_12e_ST_MJ_SA_base-787edd36.pth
+```
+
+Semua file di `detector/models/` git-ignored — tiap mesin download sendiri.
+
 ## OpenCode (provider opsional)
 
 Default `auto` memakai Google gratis + fallback MyMemory. `provider=opencode`
