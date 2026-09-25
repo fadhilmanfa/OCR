@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { ocrBubbleCrops, ocrEnglish, type BBox } from "@/lib/ocr";
 import { ocrComicsPlus, type OcrEngine } from "@/lib/ocrComicsPlus";
 import { ocrVisionBubbleCrops } from "@/lib/ocrVisionLLM";
-import { bubbleEnabled, cropBubble, detectBubbles, drawBubbleBoxes } from "@/lib/bubble";
+import { bubbleEnabled, cropBubble, detectBubbles } from "@/lib/bubble";
 import { translateBatch } from "@/lib/translate";
 import { overlayTranslations } from "@/lib/overlay";
 import type { JobStage, PageProgress } from "@/components/types";
@@ -74,9 +74,7 @@ export async function collectImages(files: File[]): Promise<CollectedImage[]> {
 
 export interface PageResult {
   file: string;
-  original: string;
   url: string;
-  originalUrl: string;
   via: string;
   bubbleCount: number;
   boxes: Array<{ en: string; id: string; bbox: BBox }>;
@@ -182,6 +180,7 @@ export async function processCollectedImages(
   });
 
   const pages: PageResult[] = [];
+  const usedNames = new Set<string>();
 
   for (let i = 0; i < images.length; i++) {
     const img = images[i];
@@ -352,16 +351,20 @@ export async function processCollectedImages(
     });
     const items = boxes.map((b, k) => ({ text: idTexts[k], bbox: b.bbox }));
     const outBuf = items.length ? await overlayTranslations(normalized, items) : normalized;
-    const outName = `p${String(i + 1).padStart(3, "0")}_${path.parse(img.name).name}.png`;
+    // Nama output = nama file asli (ekstensi dipaksa .png). Anti tabrakan
+    // kalau ada basename kembar dari folder berbeda di ZIP/RAR.
+    const rawBase = path.parse(img.name).name || `page-${i + 1}`;
+    let outName = `${rawBase}.png`;
+    let dup = 2;
+    while (usedNames.has(outName) || fs.existsSync(path.join(jobDir, outName))) {
+      outName = `${rawBase}_${dup}.png`;
+      dup++;
+    }
+    usedNames.add(outName);
     fs.writeFileSync(path.join(jobDir, outName), outBuf);
-    const origName = `orig_${outName}`;
-    const origBuf = bubbles.length > 0 ? await drawBubbleBoxes(normalized, bubbles) : normalized;
-    fs.writeFileSync(path.join(jobDir, origName), origBuf);
     pages.push({
       file: outName,
-      original: origName,
-      url: `/api/outputs/${jobId}/${outName}`,
-      originalUrl: `/api/outputs/${jobId}/${origName}`,
+      url: `/api/outputs/${jobId}/${encodeURIComponent(outName)}`,
       via,
       bubbleCount: bubbles.length,
       boxes: boxes.map((b, k) => ({ en: b.text, id: idTexts[k], bbox: b.bbox })),

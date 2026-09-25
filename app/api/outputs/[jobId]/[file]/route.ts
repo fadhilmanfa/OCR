@@ -21,10 +21,13 @@ export async function GET(
 ) {
   const { jobId, file } = await params;
 
-  // Anti path-traversal: hanya nama file sederhana yang diizinkan.
+  // Anti path-traversal: hanya nama file sederhana yang diizinkan
+  // (mendukung nama asli seperti "One Piece 001.png").
   if (
     !/^[a-z0-9]+$/i.test(jobId) ||
-    !/^[a-zA-Z0-9_.\-]+$/.test(file) ||
+    !file ||
+    file.includes("/") ||
+    file.includes("\\") ||
     file.includes("..")
   ) {
     return NextResponse.json({ error: "file tidak valid" }, { status: 400 });

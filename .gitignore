@@ -39,6 +39,10 @@ yarn-error.log*
 # model YOLO lokal (~52MB, jangan commit)
 detector/models/
 
+# venv python lokal (jangan commit)
+detector/.venv/
+.venv*/
+
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example

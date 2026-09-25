@@ -13,12 +13,11 @@ import { toast } from "sonner";
 import type { JobProgress, ProcessResult } from "./types";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -27,8 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+import { OsBadges } from "@/components/OsIcons";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -40,6 +38,12 @@ interface Props {
 }
 
 const ACCEPT = ".png,.jpg,.jpeg,.webp,.zip,.rar";
+
+function fileSize(size: number) {
+  return size < 1024 * 1024
+    ? `${Math.max(1, Math.round(size / 1024))} KB`
+    : `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function UploadForm({
   onResult,
@@ -57,8 +61,13 @@ export default function UploadForm({
   const [dragOver, setDragOver] = useState(false);
 
   function syncFiles(list: FileList | File[] | null) {
-    if (!list) return;
+    if (!list || disabled) return;
     const arr = Array.from(list).slice(0, 50);
+    if (list.length > 50) {
+      toast.warning("Maksimal 50 file", {
+        description: "Hanya 50 file pertama yang ditambahkan.",
+      });
+    }
     setFiles(arr);
     // sinkronkan ke input agar FormData tetap konsisten
     if (inputRef.current && arr.length) {
@@ -69,6 +78,7 @@ export default function UploadForm({
   }
 
   function removeFile(idx: number) {
+    if (disabled) return;
     const next = files.filter((_, i) => i !== idx);
     setFiles(next);
     if (inputRef.current) {
@@ -191,180 +201,202 @@ export default function UploadForm({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <CloudUpload className="size-4" />
-              Upload komik
-            </CardTitle>
-            <CardDescription>
-              JPG / PNG / WEBP (maks 50 file) atau ZIP/RAR. Preview & translate
-              muncul otomatis setelah diproses.
-            </CardDescription>
-          </div>
-          {files.length > 0 && (
-            <Badge variant="secondary">{files.length} file</Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div
-          role="button"
-          tabIndex={0}
-          aria-label="Area upload, klik atau drag file ke sini"
-          onClick={() => inputRef.current?.click()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
-          }}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOver(false);
-            syncFiles(e.dataTransfer.files);
-          }}
-          className={cn(
-            "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed px-4 py-8 text-center transition-colors",
-            dragOver
-              ? "border-primary bg-accent"
-              : "border-input bg-muted/40 hover:bg-muted/70"
-          )}
-        >
-          <span className="bg-background flex size-10 items-center justify-center rounded-full border shadow-xs">
-            <CloudUpload className="size-5" />
-          </span>
-          <p className="text-sm font-medium">
-            Klik untuk pilih file atau drag & drop ke sini
-          </p>
-          <p className="text-muted-foreground text-xs">
-            {ACCEPT} · tiap file diproses per halaman
-          </p>
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            accept={ACCEPT}
-            onChange={(e) => syncFiles(e.target.files)}
-            className="hidden"
-          />
-        </div>
-
-        {files.length > 0 && (
-          <ul className="grid gap-2 sm:grid-cols-2">
-            {files.map((f, i) => (
-              <li
-                key={`${f.name}-${f.size}-${i}`}
-                className="bg-muted/50 flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs"
-              >
-                {f.name.toLowerCase().endsWith(".zip") ||
-                f.name.toLowerCase().endsWith(".rar") ? (
-                  <FileArchive className="size-4 shrink-0" />
-                ) : (
-                  <FileImage className="size-4 shrink-0" />
-                )}
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {f.name}
-                </span>
-                <span className="text-muted-foreground shrink-0">
-                  {(f.size / 1024).toFixed(0)} KB
-                </span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeFile(i);
-                  }}
-                  aria-label={`Hapus ${f.name}`}
-                >
-                  <X className="size-3.5" />
-                </Button>
-              </li>
-            ))}
-          </ul>
+    <section aria-label="Unggah komik" className="space-y-4">
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!disabled) setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          syncFiles(e.dataTransfer.files);
+        }}
+        className={cn(
+          "flex flex-col items-center rounded-xl border border-dashed px-4 py-7 text-center transition-colors sm:py-9",
+          dragOver ? "border-foreground bg-muted" : "border-input bg-muted/20"
         )}
+      >
+        <CloudUpload aria-hidden="true" className="text-muted-foreground mb-3 size-6" />
+        <p className="text-sm font-medium">Pilih gambar atau arsip komik</p>
+        <p className="text-muted-foreground mt-1 text-xs">
+          JPG, PNG, WEBP, ZIP, RAR · maksimal 50 file
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          className="mt-4 h-11 min-w-36"
+          onClick={() => inputRef.current?.click()}
+          disabled={disabled}
+        >
+          Pilih file
+        </Button>
+        <p className="text-muted-foreground mt-3 hidden text-xs sm:block">
+          atau tarik dan lepas file di sini
+        </p>
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept={ACCEPT}
+          onChange={(e) => syncFiles(e.target.files)}
+          className="hidden"
+          disabled={disabled}
+        />
+      </div>
 
-        <Separator />
-
-        <div className="grid gap-4 md:grid-cols-3">
-          <div className="space-y-1.5">
-            <Label className="flex items-center gap-1.5">
-              <Settings2 className="size-3.5" />
-              Provider translate
-            </Label>
-            <Select value={provider} onValueChange={setProvider}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Pilih provider" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">
-                  auto (Google gratis → MyMemory)
-                </SelectItem>
-                <SelectItem value="openrouter">
-                  openrouter (LLM, natural)
-                </SelectItem>
-                <SelectItem value="opencode">
-                  opencode (server lokal)
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Bubble YOLO</Label>
-            <Select value={bubble} onValueChange={setBubble}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Pilih model bubble" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ogkalu">ogkalu (barat + manga)</SelectItem>
-                <SelectItem value="psimera">psimera (manga)</SelectItem>
-                <SelectItem value="0">mati (OCR penuh)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>OCR engine</Label>
-            <Select value={ocrEngine} onValueChange={setOcrEngine}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Pilih OCR engine" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="tesseract">
-                  tesseract (default, cepat)
-                </SelectItem>
-                <SelectItem value="comics_text_plus">
-                  comics_text_plus (perlu model)
-                </SelectItem>
-                <SelectItem value="vision_llm">
-                  vision_llm (perlu API key)
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-muted-foreground text-xs">
-            {provider === "openrouter" || ocrEngine === "vision_llm"
-              ? "Butuh OPENROUTER_API_KEY di .env — cek /api/health."
-              : "Default auto + tesseract jalan tanpa API key."}
-          </p>
+      {files.length === 1 && (
+        <div className="flex min-w-0 items-center gap-2 border-b pb-2 text-sm">
+          {files[0].name.toLowerCase().endsWith(".zip") ||
+          files[0].name.toLowerCase().endsWith(".rar") ? (
+            <FileArchive aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
+          ) : (
+            <FileImage aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
+          )}
+          <span className="min-w-0 flex-1 truncate" title={files[0].name}>
+            {files[0].name}
+          </span>
+          <span className="text-muted-foreground shrink-0 text-xs">
+            {fileSize(files[0].size)}
+          </span>
           <Button
-            onClick={handleProcess}
-            disabled={disabled || files.length === 0}
-            className="sm:min-w-40"
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-10"
+            onClick={() => removeFile(0)}
+            aria-label={`Hapus ${files[0].name}`}
+            disabled={disabled}
           >
-            {disabled && <Loader2 className="animate-spin" />}
-            {disabled ? "Memproses..." : "Proses sekarang"}
+            <X className="size-4" />
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      )}
+
+      {files.length > 1 && (
+        <Accordion type="single" collapsible className="border-b">
+          <AccordionItem value="files" className="border-none">
+            <AccordionTrigger className="py-3 hover:no-underline">
+              <span className="min-w-0 text-left">
+                <span className="block text-sm font-medium">{files.length} file dipilih</span>
+                <span className="text-muted-foreground block truncate text-xs font-normal">
+                  {files[0].name} dan {files.length - 1} lainnya · lihat &amp; kelola
+                </span>
+              </span>
+            </AccordionTrigger>
+            <AccordionContent>
+              <ul className="max-h-60 divide-y overflow-y-auto">
+                {files.map((f, i) => (
+                  <li key={`${f.name}-${f.size}-${i}`} className="flex min-w-0 items-center gap-2 py-1 text-sm">
+                    {f.name.toLowerCase().endsWith(".zip") || f.name.toLowerCase().endsWith(".rar") ? (
+                      <FileArchive aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
+                    ) : (
+                      <FileImage aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
+                    <span className="text-muted-foreground shrink-0 text-xs">{fileSize(f.size)}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-10"
+                      onClick={() => removeFile(i)}
+                      aria-label={`Hapus ${f.name}`}
+                      disabled={disabled}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      )}
+
+      <Accordion type="single" collapsible className="border-y">
+        <AccordionItem value="settings" className="border-none">
+          <AccordionTrigger className="py-4 hover:no-underline">
+            <span className="flex min-w-0 items-center gap-3 text-left">
+              <Settings2 aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">Detail pemrosesan</span>
+                <span className="text-muted-foreground block truncate text-xs font-normal">
+                  {provider === "auto" ? "Otomatis" : provider === "openrouter" ? "OpenRouter" : "OpenCode"} · {ocrEngine === "tesseract" ? "Tesseract" : ocrEngine === "vision_llm" ? "Vision LLM" : "Comics Text Plus"}
+                </span>
+              </span>
+            </span>
+          </AccordionTrigger>
+          <AccordionContent className="space-y-4 pt-1">
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="provider">Penerjemah</Label>
+                <Select value={provider} onValueChange={setProvider} disabled={disabled}>
+                  <SelectTrigger id="provider" className="h-11 w-full">
+                    <SelectValue placeholder="Pilih penerjemah" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto"><span className="flex items-center gap-3"><span>Otomatis</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="openrouter"><span className="flex items-center gap-3"><span>OpenRouter</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="opencode"><span className="flex items-center gap-3"><span>OpenCode</span><OsBadges mac win /></span></SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  {provider === "auto" ? "Google gratis, lalu MyMemory bila perlu." : provider === "openrouter" ? "Terjemahan LLM dengan API key." : "Menggunakan server OpenCode lokal."}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="bubble">Deteksi bubble</Label>
+                <Select value={bubble} onValueChange={setBubble} disabled={disabled}>
+                  <SelectTrigger id="bubble" className="h-11 w-full">
+                    <SelectValue placeholder="Pilih model bubble" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ogkalu"><span className="flex items-center gap-3"><span>Ogkalu</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="psimera"><span className="flex items-center gap-3"><span>Psimera</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="0"><span className="flex items-center gap-3"><span>Matikan</span><OsBadges mac win /></span></SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  {bubble === "ogkalu" ? "Untuk komik barat dan manga." : bubble === "psimera" ? "Untuk halaman manga." : "OCR seluruh halaman tanpa deteksi bubble."}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="ocr-engine">Mesin OCR</Label>
+                <Select value={ocrEngine} onValueChange={setOcrEngine} disabled={disabled}>
+                  <SelectTrigger id="ocr-engine" className="h-11 w-full">
+                    <SelectValue placeholder="Pilih mesin OCR" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tesseract"><span className="flex items-center gap-3"><span>Tesseract</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="comics_text_plus"><span className="flex items-center gap-3"><span>Comics Text Plus</span><OsBadges mac={false} win /></span></SelectItem>
+                    <SelectItem value="vision_llm"><span className="flex items-center gap-3"><span>Vision LLM</span><OsBadges mac win /></span></SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  {ocrEngine === "tesseract" ? "Pilihan bawaan, tanpa API key." : ocrEngine === "comics_text_plus" ? "Memerlukan model lokal." : "Memerlukan API key OpenRouter."}
+                </p>
+              </div>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+
+      {(provider === "openrouter" || ocrEngine === "vision_llm") && (
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          Perlu OPENROUTER_API_KEY di .env. Periksa statusnya di /api/health.
+        </p>
+      )}
+      <Button
+        type="button"
+        onClick={handleProcess}
+        disabled={disabled || files.length === 0}
+        className="h-11 w-full"
+      >
+        {disabled && <Loader2 className="animate-spin" />}
+        {disabled ? "Memproses..." : "Proses komik"}
+      </Button>
+    </section>
   );
 }

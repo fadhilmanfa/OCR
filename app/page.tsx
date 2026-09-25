@@ -1,93 +1,74 @@
 "use client";
 
 import { useState } from "react";
-import { BookOpenText, ScanText, Sparkles } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import UploadForm from "@/components/UploadForm";
 import Downloads from "@/components/Downloads";
 import PageCard from "@/components/PageCard";
 import JobProgressCard from "@/components/JobProgressCard";
 import type { JobProgress, ProcessResult } from "@/components/types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 
 export default function Home() {
   const [result, setResult] = useState<ProcessResult | null>(null);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<JobProgress | null>(null);
+  const [formVersion, setFormVersion] = useState(0);
   const isError = status.startsWith("Gagal");
+  const showForm = !busy && !result;
+  const showResult = !busy && result !== null;
+
+  function startNew() {
+    setResult(null);
+    setStatus("");
+    setProgress(null);
+    setFormVersion((version) => version + 1);
+  }
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6 px-4 py-6 md:py-8">
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="secondary">
-            <ScanText />
-            OCR + Translate
-          </Badge>
-          <Badge variant="outline">
-            <Sparkles />
-            Bubble YOLO · Tesseract · LLM opsional
-          </Badge>
-        </div>
-        <h1 className="text-2xl font-bold tracking-tight text-balance md:text-3xl">
-          Komik OCR: Inggris → Indonesia
-        </h1>
-        <p className="text-muted-foreground max-w-2xl text-sm leading-relaxed md:text-[15px]">
-          Upload <span className="font-medium text-foreground">JPG/PNG</span>{" "}
-          (banyak file bisa) atau{" "}
-          <span className="font-medium text-foreground">ZIP/RAR</span> berisi
-          gambar. Teks asli dihapus (putih) lalu ditimpa Bahasa Indonesia.
-        </p>
-      </section>
+    <div className="mx-auto w-full max-w-3xl space-y-8 px-4 pt-8 pb-16 sm:px-6 sm:pt-12">
+      {showForm && (
+        <section className="space-y-2">
+          <h1 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+            Terjemahkan komik
+          </h1>
+          <p className="text-muted-foreground max-w-xl text-sm leading-relaxed sm:text-base">
+            Unggah gambar atau arsip komik berbahasa Inggris. Baca hasil
+            terjemahannya di sini, lalu unduh sebagai ZIP atau PDF.
+          </p>
+        </section>
+      )}
 
-      <UploadForm
-        onResult={setResult}
-        onStatus={setStatus}
-        onProgress={setProgress}
-        disabled={busy}
-        setDisabled={setBusy}
-      />
+      <div hidden={!showForm}>
+        <UploadForm
+          key={formVersion}
+          onResult={setResult}
+          onStatus={setStatus}
+          onProgress={setProgress}
+          disabled={busy}
+          setDisabled={setBusy}
+        />
+      </div>
 
       {busy && <JobProgressCard progress={progress} status={status} />}
 
-      {!busy && status && (
-        <Alert variant={isError ? "destructive" : "default"}>
-          <BookOpenText />
-          <AlertTitle>{isError ? "Terjadi kesalahan" : "Status"}</AlertTitle>
+      {showForm && isError && (
+        <Alert variant="destructive">
+          <CircleAlert />
+          <AlertTitle>Proses gagal</AlertTitle>
           <AlertDescription>{status}</AlertDescription>
         </Alert>
       )}
 
-      {result && <Downloads result={result} />}
+      {showResult && <Downloads result={result} onReset={startNew} />}
 
-      {!busy && !result && !status && (
-        <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
-            <span className="bg-muted flex size-11 items-center justify-center rounded-full">
-              <BookOpenText className="size-5" />
-            </span>
-            <p className="text-sm font-medium">Belum ada hasil</p>
-            <p className="text-muted-foreground max-w-sm text-xs leading-relaxed">
-              Pilih gambar komik di atas lalu klik Proses. Preview before/after
-              dan tombol download ZIP/PDF akan muncul di sini.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {result && result.pages.length > 0 && (
-        <section className="space-y-4">
-          <div className="flex items-center gap-3">
-            <h2 className="text-sm font-semibold tracking-tight">
-              Preview {result.pages.length} halaman
-            </h2>
-            <Separator className="flex-1" />
-            <Badge variant="outline">{result.provider}</Badge>
-          </div>
-          <div className="grid gap-4">
+      {showResult && result.pages.length > 0 && (
+        <section aria-labelledby="preview-title" className="space-y-5">
+          <h2 id="preview-title" className="text-base font-semibold tracking-tight">
+            Preview hasil
+          </h2>
+          <div>
             {result.pages.map((p, i) => (
               <PageCard key={`${p.file}-${i}`} page={p} index={i} />
             ))}

@@ -6,9 +6,7 @@ export interface PageBox {
 
 export interface ProcessPage {
   file: string;
-  original: string;
   url: string;
-  originalUrl: string;
   via?: string;
   bubbleCount?: number;
   boxes: PageBox[];

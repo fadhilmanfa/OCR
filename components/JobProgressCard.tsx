@@ -1,11 +1,13 @@
 "use client";
 
-import { Hourglass } from "lucide-react";
 import type { JobProgress, JobStage, PageStage } from "./types";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { Progress } from "@/components/ui/progress";
-import { cn } from "@/lib/utils";
 
 const STAGE_LABEL: Record<JobStage, string> = {
   upload: "Upload",
@@ -28,21 +30,6 @@ const PAGE_STAGE_LABEL: Record<PageStage, string> = {
   error: "Gagal",
 };
 
-function pageDot(stage: PageStage): string {
-  switch (stage) {
-    case "done":
-      return "bg-emerald-500";
-    case "ocr":
-    case "translate":
-    case "overlay":
-      return "bg-amber-500 animate-pulse";
-    case "error":
-      return "bg-red-500";
-    default:
-      return "bg-muted-foreground/30";
-  }
-}
-
 export default function JobProgressCard({
   progress,
   status,
@@ -53,78 +40,52 @@ export default function JobProgressCard({
   const percent = Math.min(100, Math.max(0, progress?.percent ?? 3));
   const total = progress?.totalPages ?? 0;
   const current = progress?.currentPage ?? 0;
-  const bubbleTotal = progress?.bubbleTotal;
   const stageLabel = progress ? (STAGE_LABEL[progress.stage] ?? progress.stage) : "Menyiapkan...";
-  const translatedSum = (progress?.pages ?? []).reduce((s, p) => s + (p.translated || 0), 0);
-  const textsSum = (progress?.pages ?? []).reduce((s, p) => s + (p.totalTexts || 0), 0);
 
   return (
-    <Card>
-      <CardContent className="space-y-3 pt-6">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <Hourglass className="size-4 animate-spin" />
-          <span className="font-medium">Memproses… {Math.round(percent)}%</span>
-          <Badge variant="secondary">{stageLabel}</Badge>
-          {total > 0 && (
-            <Badge variant="outline">
-              Halaman {Math.min(current + 1, total)}/{total}
-            </Badge>
-          )}
-          {bubbleTotal !== null && bubbleTotal !== undefined && (
-            <Badge variant="outline">{bubbleTotal} bubble</Badge>
-          )}
-          {textsSum > 0 && (
-            <Badge variant="outline">
-              {translatedSum}/{textsSum} teks diterjemahkan
-            </Badge>
-          )}
-          <span className="text-muted-foreground text-xs">
-            OCR bisa 10–60 detik per halaman
-          </span>
-        </div>
-
-        <Progress value={percent} className="h-1.5" />
-        {status && (
-          <p role="status" className="text-muted-foreground text-xs">
-            {status}
+    <section aria-label="Progres pemrosesan" className="space-y-4">
+      <div className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight">Memproses komik</h1>
+          <p className="text-muted-foreground mt-1 text-xs">
+            {stageLabel}{total > 0 && ` · Halaman ${Math.min(current + 1, total)}/${total}`}
           </p>
-        )}
+        </div>
+        <span className="shrink-0 text-sm font-medium tabular-nums">
+          {Math.round(percent)}%
+        </span>
+      </div>
+      <Progress value={percent} aria-label="Progres pemrosesan" className="h-2" />
+      {status && (
+        <p role="status" className="text-muted-foreground text-xs leading-relaxed">
+          {status}
+        </p>
+      )}
+      <p className="text-muted-foreground text-xs">OCR dapat memakan 10–60 detik per halaman.</p>
 
-        {progress && progress.pages.length > 0 && (
-          <div className="space-y-1.5">
-            <p className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">
-              Detail per halaman
-            </p>
-            <ul className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
-              {progress.pages.map((p) => (
-                <li
-                  key={p.index}
-                  className="bg-muted/40 flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs"
-                >
-                  <span className={cn("size-2 shrink-0 rounded-full", pageDot(p.stage))} />
-                  <span className="font-mono font-medium shrink-0">#{p.index + 1}</span>
-                  <span className="min-w-0 flex-1 truncate" title={p.file}>
-                    {p.file}
-                  </span>
-                  <Badge variant="secondary" className="shrink-0 text-[10px]">
-                    {PAGE_STAGE_LABEL[p.stage] ?? p.stage}
-                  </Badge>
-                  {p.bubbleCount !== null && p.bubbleCount !== undefined && (
-                    <span className="text-muted-foreground shrink-0 tabular-nums">
-                      {p.bubbleCount} bubble
+      {progress && progress.pages.length > 0 && (
+        <Accordion type="single" collapsible className="border-t">
+          <AccordionItem value="pages" className="border-none">
+            <AccordionTrigger className="py-3 text-xs hover:no-underline">
+              Detail {progress.pages.length} halaman
+            </AccordionTrigger>
+            <AccordionContent>
+              <ul className="max-h-64 divide-y overflow-y-auto">
+                {progress.pages.map((p) => (
+                  <li key={p.index} className="flex min-w-0 items-center gap-3 py-2 text-xs">
+                    <span className="text-muted-foreground w-5 shrink-0 tabular-nums">{p.index + 1}</span>
+                    <span className="min-w-0 flex-1 truncate" title={p.file}>{p.file}</span>
+                    <span className="text-muted-foreground shrink-0">
+                      {PAGE_STAGE_LABEL[p.stage] ?? p.stage}
+                      {p.totalTexts > 0 && ` · ${p.translated}/${p.totalTexts}`}
                     </span>
-                  )}
-                  {p.totalTexts > 0 && (
-                    <span className="shrink-0 tabular-nums">
-                      {p.translated}/{p.totalTexts} teks
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+                  </li>
+                ))}
+              </ul>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      )}
+    </section>
   );
 }
