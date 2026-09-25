@@ -1,24 +1,24 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CloudUpload,
-  FileImage,
   FileArchive,
+  Info,
   Loader2,
   Settings2,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { JobProgress, ProcessResult } from "./types";
+import type { ProcessingSettings } from "./useJobSession";
 import { Button } from "@/components/ui/button";
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -30,11 +30,10 @@ import { OsBadges } from "@/components/OsIcons";
 import { cn } from "@/lib/utils";
 
 interface Props {
-  onResult: (r: ProcessResult | null) => void;
-  onStatus: (s: string) => void;
-  onProgress: (p: JobProgress | null) => void;
+  settings: ProcessingSettings;
+  onSettingsChange: (settings: ProcessingSettings) => void;
+  onJobStarted: (jobId: string) => void;
   disabled: boolean;
-  setDisabled: (v: boolean) => void;
 }
 
 const ACCEPT = ".png,.jpg,.jpeg,.webp,.zip,.rar";
@@ -45,20 +44,106 @@ function fileSize(size: number) {
     : `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function UploadForm({
-  onResult,
-  onStatus,
-  onProgress,
+function isPreviewable(name: string) {
+  return /\.(png|jpe?g|webp|gif|bmp)$/i.test(name);
+}
+
+function FileThumb({
+  file,
+  onRemove,
   disabled,
-  setDisabled,
+  leaving,
+}: {
+  file: File;
+  onRemove: () => void;
+  disabled: boolean;
+  leaving: boolean;
+}) {
+  // Blob URL dibuat di dalam effect (bukan saat render) agar selamat dari
+  // StrictMode dev yang menjalankan cleanup effect tepat setelah mount.
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isPreviewable(file.name)) return;
+    const next = URL.createObjectURL(file);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUrl(next);
+    return () => {
+      URL.revokeObjectURL(next);
+    };
+  }, [file]);
+
+  return (
+    <div
+      className={`group relative size-28 shrink-0 overflow-hidden rounded-lg border bg-muted ${
+        leaving
+          ? "animate-out fade-out-0 zoom-out-95 duration-180"
+          : "animate-in fade-in-0 zoom-in-95 duration-200"
+      }`}
+    >
+      {url ? (
+        // blob URL pratinjau lokal, tidak lewat next/image
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt={`Pratinjau ${file.name}`}
+          loading="lazy"
+          className="size-full object-contain"
+        />
+      ) : (
+        <div className="flex size-full flex-col items-center justify-center gap-1 p-2">
+          <FileArchive aria-hidden="true" className="text-muted-foreground size-6" />
+          <span className="text-muted-foreground w-full truncate text-center text-[10px]">
+            Arsip
+          </span>
+        </div>
+      )}
+      <div
+        className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/55 px-1.5 py-0.5 text-[10px] text-white"
+        title={`${file.name} · ${fileSize(file.size)}`}
+      >
+        {file.name}
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={disabled}
+        aria-label={`Hapus ${file.name}`}
+        className="bg-background absolute top-1 right-1 flex size-6 items-center justify-center rounded-full border shadow-sm transition-opacity hover:bg-accent disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+export default function UploadForm({
+  settings,
+  onSettingsChange,
+  onJobStarted,
+  disabled: sessionBusy,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [provider, setProvider] = useState("auto");
-  const [bubble, setBubble] = useState("ogkalu");
-  const [ocrEngine, setOcrEngine] = useState("tesseract");
+  const submitting = useRef(false);
+  const removeTimers = useRef<number[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const disabled = sessionBusy || uploading;
+  const { provider, bubble, ocrEngine, apiKey } = settings;
+  const setProvider = (provider: string) => onSettingsChange({ ...settings, provider });
+  const setBubble = (bubble: string) => onSettingsChange({ ...settings, bubble });
+  const setOcrEngine = (ocrEngine: string) => onSettingsChange({ ...settings, ocrEngine });
+  const setApiKey = (apiKey: string) => onSettingsChange({ ...settings, apiKey });
+  const [showApiKey, setShowApiKey] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  const [leaving, setLeaving] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
+
+  // Bersihkan timer hapus yang belum tuntas saat form dilepas.
+  useEffect(() => {
+    const timers = removeTimers.current;
+    return () => {
+      timers.forEach((t) => window.clearTimeout(t));
+    };
+  }, []);
 
   function syncFiles(list: FileList | File[] | null) {
     if (!list || disabled) return;
@@ -68,135 +153,58 @@ export default function UploadForm({
         description: "Hanya 50 file pertama yang ditambahkan.",
       });
     }
+    removeTimers.current.forEach((t) => window.clearTimeout(t));
+    removeTimers.current = [];
+    setLeaving([]);
     setFiles(arr);
-    // sinkronkan ke input agar FormData tetap konsisten
-    if (inputRef.current && arr.length) {
-      const dt = new DataTransfer();
-      arr.forEach((f) => dt.items.add(f));
-      inputRef.current.files = dt.files;
-    }
   }
 
   function removeFile(idx: number) {
     if (disabled) return;
-    const next = files.filter((_, i) => i !== idx);
-    setFiles(next);
-    if (inputRef.current) {
-      const dt = new DataTransfer();
-      next.forEach((f) => dt.items.add(f));
-      inputRef.current.files = dt.files;
-    }
+    const target = files[idx];
+    if (!target || leaving.includes(target)) return;
+    // Mainkan animasi keluar dulu, kartu benar-benar dibuang setelahnya.
+    setLeaving((prev) => [...prev, target]);
+    const timer = window.setTimeout(() => {
+      setFiles((prev) => prev.filter((f) => f !== target));
+      setLeaving((prev) => prev.filter((f) => f !== target));
+    }, 180);
+    removeTimers.current.push(timer);
   }
 
   async function handleProcess() {
-    const inputFiles = inputRef.current?.files;
-    if (!inputFiles || !inputFiles.length) {
+    if (disabled || submitting.current) return;
+    if (!files.length) {
       toast.error("Pilih file dulu", {
         description: "Upload JPG/PNG (boleh banyak) atau ZIP/RAR berisi gambar.",
       });
       return;
     }
-    // Hentikan polling sebelumnya kalau ada (klik ganda / job lama).
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    form.append("provider", provider);
+    form.append("bubble", bubble);
+    form.append("ocrEngine", ocrEngine);
+    if ((provider === "openrouter" || ocrEngine === "vision_llm") && apiKey.trim()) {
+      form.append("apiKey", apiKey.trim());
     }
-    const fd = new FormData();
-    for (const f of Array.from(inputFiles)) fd.append("files", f);
-    fd.append("provider", provider);
-    fd.append("bubble", bubble);
-    fd.append("ocrEngine", ocrEngine);
-    setDisabled(true);
-    onStatus("Mengunggah & menyiapkan job...");
-    onResult(null);
-    onProgress(null);
+    submitting.current = true;
+    setUploading(true);
     try {
-      // 1) Start job — langsung dapat jobId tanpa nunggu proses selesai.
-      const start = await fetch(
-        "/api/jobs?provider=" +
-          encodeURIComponent(provider) +
-          "&bubble=" +
-          encodeURIComponent(bubble) +
-          "&ocrEngine=" +
-          encodeURIComponent(ocrEngine),
-        { method: "POST", body: fd }
-      );
-      const started = await start.json().catch(() => ({}));
-      if (!start.ok) throw new Error(started.error || String(start.status));
-      const jobId = String(started.jobId || "");
-      if (!jobId) throw new Error("server tidak mengembalikan jobId");
-      onStatus(`Job ${jobId}: mengunggah selesai, mulai diproses...`);
-
-      // 2) Poll progress tiap 800ms sampai done/error.
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const finish = (fn: () => void) => {
-          if (settled) return;
-          settled = true;
-          if (pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-          fn();
-        };
-        const tick = async () => {
-          try {
-            const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
-            const data = (await res.json().catch(() => ({}))) as JobProgress & {
-              error?: string;
-            };
-            if (!res.ok) throw new Error((data as { error?: string }).error || String(res.status));
-            const prog = data as JobProgress;
-            onProgress(prog);
-            onStatus(prog.message || `Memproses... ${Math.round(prog.percent)}%`);
-            if (prog.done) {
-              finish(() => {
-                if (prog.error || prog.stage === "error") {
-                  reject(new Error(prog.error || "job gagal"));
-                } else if (prog.result) {
-                  onStatus(`Selesai: ${prog.result.pages.length} halaman`);
-                  toast.success(`Selesai: ${prog.result.pages.length} halaman`, {
-                    description: `Provider ${prog.result.provider ?? provider}`,
-                  });
-                  onResult(prog.result as ProcessResult);
-                  resolve();
-                } else {
-                  reject(new Error("job selesai tanpa hasil"));
-                }
-              });
-            }
-          } catch (e) {
-            // 404 saat job baru dibuat (race) -> coba lagi 1x putaran berikutnya.
-            // Error lain yang persisten akan terlihat di tick berikutnya;
-            // jangan langsung reject agar tahan terhadap glitch jaringan sesaat.
-            // Hanya reject kalau fetch gagal total berkali-kali? Untuk simpel:
-            // log dan lanjut; reject hanya via tombol / timeout 10 menit.
-            if (e instanceof Error && /tidak ditemukan|kedaluwarsa/i.test(e.message)) {
-              // beri kesempatan 1 putaran lagi sebelum menyerah
-            }
-          }
-        };
-        // Timeout pengaman 30 menit (sama dengan TTL job server).
-        const timeout = setTimeout(() => {
-          finish(() => reject(new Error("timeout menunggu job (30 menit)")));
-        }, 30 * 60 * 1000);
-        const wrappedTick = async () => {
-          await tick();
-          if (settled) clearTimeout(timeout);
-        };
-        pollRef.current = setInterval(wrappedTick, 800);
-        void wrappedTick();
-      });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      onStatus("Gagal: " + msg);
-      toast.error("Gagal memproses", { description: msg });
-    } finally {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
+      const response = await fetch("/api/jobs", { method: "POST", body: form });
+      const started = await response.json();
+      if (!response.ok) throw new Error(started.error || String(response.status));
+      if (typeof started.jobId !== "string" || !/^[a-z0-9]+$/i.test(started.jobId)) {
+        throw new Error("Server tidak mengembalikan jobId yang valid");
       }
-      setDisabled(false);
+      onJobStarted(started.jobId);
+    } catch (error) {
+      toast.error("Gagal memproses", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      submitting.current = false;
+      setUploading(false);
     }
   }
 
@@ -221,7 +229,7 @@ export default function UploadForm({
         <CloudUpload aria-hidden="true" className="text-muted-foreground mb-3 size-6" />
         <p className="text-sm font-medium">Pilih gambar atau arsip komik</p>
         <p className="text-muted-foreground mt-1 text-xs">
-          JPG, PNG, WEBP, ZIP, RAR · maksimal 50 file
+          JPG, PNG, WEBP, ZIP, RAR
         </p>
         <Button
           type="button"
@@ -246,90 +254,39 @@ export default function UploadForm({
         />
       </div>
 
-      {files.length === 1 && (
-        <div className="flex min-w-0 items-center gap-2 border-b pb-2 text-sm">
-          {files[0].name.toLowerCase().endsWith(".zip") ||
-          files[0].name.toLowerCase().endsWith(".rar") ? (
-            <FileArchive aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
-          ) : (
-            <FileImage aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
-          )}
-          <span className="min-w-0 flex-1 truncate" title={files[0].name}>
-            {files[0].name}
-          </span>
-          <span className="text-muted-foreground shrink-0 text-xs">
-            {fileSize(files[0].size)}
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-10"
-            onClick={() => removeFile(0)}
-            aria-label={`Hapus ${files[0].name}`}
-            disabled={disabled}
-          >
-            <X className="size-4" />
-          </Button>
+      {/* Selalu mount agar tinggi mengembang/menyusut mulus; -mt-4 saat
+          tertutup menetralkan margin space-y parent sehingga tak ada gap sisa. */}
+      <div
+        className={`grid transition-all duration-300 ease-out ${
+          files.length > 0 ? "grid-rows-[1fr] opacity-100" : "-mt-4 grid-rows-[0fr] opacity-0"
+        }`}
+      >
+        <div className="min-h-0 overflow-hidden border rounded-xl p-4">
+          <div className="space-y-2 pb-1">
+            <p className="text-muted-foreground text-xs text-center">
+              {files.length} file dipilih
+            </p>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {files.map((f, i) => (
+                <FileThumb
+                  key={`${f.name}-${f.size}-${i}`}
+                  file={f}
+                  disabled={disabled}
+                  leaving={leaving.includes(f)}
+                  onRemove={() => removeFile(i)}
+                />
+              ))}
+            </div>
+          </div>
         </div>
-      )}
+      </div>
 
-      {files.length > 1 && (
-        <Accordion type="single" collapsible className="border-b">
-          <AccordionItem value="files" className="border-none">
-            <AccordionTrigger className="py-3 hover:no-underline">
-              <span className="min-w-0 text-left">
-                <span className="block text-sm font-medium">{files.length} file dipilih</span>
-                <span className="text-muted-foreground block truncate text-xs font-normal">
-                  {files[0].name} dan {files.length - 1} lainnya · lihat &amp; kelola
-                </span>
-              </span>
-            </AccordionTrigger>
-            <AccordionContent>
-              <ul className="max-h-60 divide-y overflow-y-auto">
-                {files.map((f, i) => (
-                  <li key={`${f.name}-${f.size}-${i}`} className="flex min-w-0 items-center gap-2 py-1 text-sm">
-                    {f.name.toLowerCase().endsWith(".zip") || f.name.toLowerCase().endsWith(".rar") ? (
-                      <FileArchive aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
-                    ) : (
-                      <FileImage aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate" title={f.name}>{f.name}</span>
-                    <span className="text-muted-foreground shrink-0 text-xs">{fileSize(f.size)}</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-10"
-                      onClick={() => removeFile(i)}
-                      aria-label={`Hapus ${f.name}`}
-                      disabled={disabled}
-                    >
-                      <X className="size-4" />
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
-      )}
-
-      <Accordion type="single" collapsible className="border-y">
-        <AccordionItem value="settings" className="border-none">
-          <AccordionTrigger className="py-4 hover:no-underline">
-            <span className="flex min-w-0 items-center gap-3 text-left">
-              <Settings2 aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium">Detail pemrosesan</span>
-                <span className="text-muted-foreground block truncate text-xs font-normal">
-                  {provider === "auto" ? "Otomatis" : provider === "openrouter" ? "OpenRouter" : "OpenCode"} · {ocrEngine === "tesseract" ? "Tesseract" : ocrEngine === "vision_llm" ? "Vision LLM" : "Comics Text Plus"}
-                </span>
-              </span>
-            </span>
-          </AccordionTrigger>
-          <AccordionContent className="space-y-4 pt-1">
-            <div className="grid gap-4 md:grid-cols-3">
+      <section aria-label="Detail pemrosesan" className="space-y-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <Settings2 aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
+          <span className="block text-sm font-medium">Detail pemrosesan</span>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <Label htmlFor="provider">Penerjemah</Label>
                 <Select value={provider} onValueChange={setProvider} disabled={disabled}>
@@ -337,56 +294,148 @@ export default function UploadForm({
                     <SelectValue placeholder="Pilih penerjemah" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="auto"><span className="flex items-center gap-3"><span>Otomatis</span><OsBadges mac win /></span></SelectItem>
-                    <SelectItem value="openrouter"><span className="flex items-center gap-3"><span>OpenRouter</span><OsBadges mac win /></span></SelectItem>
-                    <SelectItem value="opencode"><span className="flex items-center gap-3"><span>OpenCode</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="auto">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Otomatis</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Google gratis, lalu MyMemory bila perlu.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="openrouter">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>OpenRouter</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Terjemahan LLM dengan API key.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="opencode">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>OpenCode</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Memakai server OpenCode lokal.</div>
+                      </div>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  {provider === "auto" ? "Google gratis, lalu MyMemory bila perlu." : provider === "openrouter" ? "Terjemahan LLM dengan API key." : "Menggunakan server OpenCode lokal."}
-                </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="bubble">Deteksi bubble</Label>
+                <Label htmlFor="bubble" className="flex items-center gap-1.5">
+                  Deteksi bubble
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Info deteksi bubble"
+                        className="text-muted-foreground hover:text-foreground cursor-help rounded-full"
+                      >
+                        <Info aria-hidden="true" className="size-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-60">
+                      Cari di mana balon teksnya (YOLO). Tidak membaca tulisan,
+                      hanya menandai area bubble agar OCR lebih akurat.
+                    </TooltipContent>
+                  </Tooltip>
+                </Label>
                 <Select value={bubble} onValueChange={setBubble} disabled={disabled}>
                   <SelectTrigger id="bubble" className="h-11 w-full">
                     <SelectValue placeholder="Pilih model bubble" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="ogkalu"><span className="flex items-center gap-3"><span>Ogkalu</span><OsBadges mac win /></span></SelectItem>
-                    <SelectItem value="psimera"><span className="flex items-center gap-3"><span>Psimera</span><OsBadges mac win /></span></SelectItem>
-                    <SelectItem value="0"><span className="flex items-center gap-3"><span>Matikan</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="ogkalu">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Ogkalu</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Untuk komik barat dan manga.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="psimera">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Psimera</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Khusus halaman manga.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="0">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Matikan</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">OCR seluruh halaman, tanpa deteksi.</div>
+                      </div>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  {bubble === "ogkalu" ? "Untuk komik barat dan manga." : bubble === "psimera" ? "Untuk halaman manga." : "OCR seluruh halaman tanpa deteksi bubble."}
-                </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="ocr-engine">Mesin OCR</Label>
+                <Label htmlFor="ocr-engine" className="flex items-center gap-1.5">
+                  Mesin OCR
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Info mesin OCR"
+                        className="text-muted-foreground hover:text-foreground cursor-help rounded-full"
+                      >
+                        <Info aria-hidden="true" className="size-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-60">
+                      Baca apa tulisannya di dalam bubble (Tesseract, Comics
+                      Text Plus, Vision LLM). Output berupa teks + kotak kata.
+                    </TooltipContent>
+                  </Tooltip>
+                </Label>
                 <Select value={ocrEngine} onValueChange={setOcrEngine} disabled={disabled}>
                   <SelectTrigger id="ocr-engine" className="h-11 w-full">
                     <SelectValue placeholder="Pilih mesin OCR" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="tesseract"><span className="flex items-center gap-3"><span>Tesseract</span><OsBadges mac win /></span></SelectItem>
-                    <SelectItem value="comics_text_plus"><span className="flex items-center gap-3"><span>Comics Text Plus</span><OsBadges mac={false} win /></span></SelectItem>
-                    <SelectItem value="vision_llm"><span className="flex items-center gap-3"><span>Vision LLM</span><OsBadges mac win /></span></SelectItem>
+                    <SelectItem value="tesseract">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Tesseract</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Bawaan, tanpa API key.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="comics_text_plus">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Comics Text Plus</span><OsBadges mac={false} win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Perlu model lokal.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="vision_llm">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Vision LLM</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Perlu API key OpenRouter.</div>
+                      </div>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  {ocrEngine === "tesseract" ? "Pilihan bawaan, tanpa API key." : ocrEngine === "comics_text_plus" ? "Memerlukan model lokal." : "Memerlukan API key OpenRouter."}
-                </p>
               </div>
             </div>
-          </AccordionContent>
-        </AccordionItem>
-      </Accordion>
+      </section>
 
       {(provider === "openrouter" || ocrEngine === "vision_llm") && (
-        <p className="text-muted-foreground text-xs leading-relaxed">
-          Perlu OPENROUTER_API_KEY di .env. Periksa statusnya di /api/health.
-        </p>
+        <div className="space-y-2">
+          <Label htmlFor="openrouter-api-key">API key OpenRouter</Label>
+          <div className="flex gap-2">
+            <Input
+              id="openrouter-api-key"
+              type={showApiKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder="sk-or-v1-..."
+              autoComplete="off"
+              spellCheck={false}
+              disabled={disabled}
+              className="h-11 min-w-0 flex-1"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11"
+              onClick={() => setShowApiKey(!showApiKey)}
+              aria-controls="openrouter-api-key"
+              aria-pressed={showApiKey}
+              disabled={disabled}
+            >
+              {showApiKey ? "Sembunyikan" : "Tampilkan"}
+            </Button>
+          </div>
+        </div>
       )}
       <Button
         type="button"
