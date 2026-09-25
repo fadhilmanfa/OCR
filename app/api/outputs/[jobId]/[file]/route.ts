@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
+import { getJob } from "@/lib/jobs";
 
 export const runtime = "nodejs";
 
@@ -38,12 +39,26 @@ export async function GET(
     return NextResponse.json({ error: "file tidak valid" }, { status: 400 });
   }
 
+  const job = getJob(jobId);
+  if (!job) {
+    return NextResponse.json({ error: "Hasil tidak ditemukan / sudah kedaluwarsa" }, { status: 404, headers: { "Cache-Control": "no-store" } });
+  }
+  if (job.expiresAt && job.expiresAt <= Date.now()) {
+    return NextResponse.json({ error: "Hasil sudah kedaluwarsa" }, { status: 410, headers: { "Cache-Control": "no-store" } });
+  }
+  const ext = path.extname(file).toLowerCase();
+  if (!MIME[ext]) {
+    return NextResponse.json({ error: "file tidak valid" }, { status: 400 });
+  }
+
   if (!fs.existsSync(abs)) {
     return NextResponse.json({ error: "file tidak ditemukan" }, { status: 404 });
   }
+  if (fs.lstatSync(OUT_DIR).isSymbolicLink() || fs.lstatSync(path.dirname(abs)).isSymbolicLink() || fs.lstatSync(abs).isSymbolicLink()) {
+    return NextResponse.json({ error: "file tidak valid" }, { status: 400 });
+  }
 
   const buf = fs.readFileSync(abs);
-  const ext = path.extname(file).toLowerCase();
   const type = MIME[ext] || "application/octet-stream";
   const isDownload = ext === ".zip" || ext === ".pdf";
 
@@ -54,7 +69,7 @@ export async function GET(
       ...(isDownload
         ? { "Content-Disposition": `attachment; filename="${file}"` }
         : {}),
-      "Cache-Control": "public, max-age=86400",
+      "Cache-Control": "no-store",
     },
   });
 }

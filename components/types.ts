@@ -13,6 +13,7 @@ export interface ProcessPage {
 }
 
 export interface ProcessResult {
+  expiresAt?: number;
   jobId: string;
   provider: string;
   pages: ProcessPage[];
@@ -51,6 +52,7 @@ export type JobStage =
   | "error";
 
 export interface JobProgress {
+  expiresAt?: number;
   jobId: string;
   percent: number;
   stage: JobStage;
