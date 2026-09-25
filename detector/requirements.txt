@@ -7,6 +7,12 @@
 #   python detector/download_model.py
 ultralytics>=8.2,<9
 
+# Ekstraksi bentuk bubble (detector/bubble_shape.py) butuh OpenCV + numpy.
+# Sudah ikut sebagai dependensi ultralytics, ditulis eksplisit biar jelas
+# (sidecar shape ringan: TIDAK butuh torch).
+opencv-python>=4.8
+numpy>=1.22
+
 # --- Engine OCR alternatif: comics_text_plus (FCENet + MASTER) ---
 # Dipakai oleh detector/ocr_comics.py via lib/ocrComicsPlus.ts.
 # TIDAK dibutuhkan kalau engine OCR = "tesseract" (default) — app tetap

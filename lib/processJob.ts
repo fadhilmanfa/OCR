@@ -8,6 +8,7 @@ import { ocrBubbleCrops, ocrEnglish, type BBox } from "@/lib/ocr";
 import { ocrComicsPlus, type OcrEngine } from "@/lib/ocrComicsPlus";
 import { ocrVisionBubbleCrops } from "@/lib/ocrVisionLLM";
 import { bubbleEnabled, cropBubble, detectBubbles } from "@/lib/bubble";
+import { extractBubbleShapes } from "@/lib/bubbleShape";
 import { translateBatch } from "@/lib/translate";
 import { overlayTranslations } from "@/lib/overlay";
 import type { JobStage, PageProgress } from "@/components/types";
@@ -203,6 +204,9 @@ export async function processCollectedImages(
 
     let boxes;
     let via = "ocr-full";
+    // True hanya bila boxes berasal dari crop bubble YOLO (bukan OCR
+    // full-page / comics) — syarat ekstraksi kontur masuk akal.
+    let fromBubbles = false;
     if (useComics) {
       boxes = comicsLists?.[i] ?? [];
       via = "comics-text-plus";
@@ -276,6 +280,7 @@ export async function processCollectedImages(
       );
       boxes.sort((a, b) => a.bbox.y0 - b.bbox.y0 || b.bbox.x0 - a.bbox.x0);
       via = useVision ? `yolo-${bubbleModel}+vision-llm` : `yolo-${bubbleModel}`;
+      fromBubbles = boxes.length > 0;
       onEvent({
         percent: base + span * 0.38,
         stage: "ocr",
@@ -297,6 +302,7 @@ export async function processCollectedImages(
           });
         });
         via = "ocr-full";
+        fromBubbles = false;
       }
     } else {
       boxes = await ocrEnglish(normalized, (p) => {
@@ -351,8 +357,40 @@ export async function processCollectedImages(
       pageIndex: i,
       pagePatch: { stage: "overlay", translated: idTexts.length },
     });
-    const items = boxes.map((b, k) => ({ text: idTexts[k], bbox: b.bbox }));
-    const outBuf = items.length ? await overlayTranslations(normalized, items) : normalized;
+    // Langkah baru: ekstraksi kontur bubble dari tiap crop (OpenCV) di
+    // antara cropBubble() dan overlayTranslations(). Hanya untuk box dari
+    // YOLO; box full-page/comics tidak punya bentuk bubble -> elips.
+    // extractBubbleShapes tidak pernah throw (gagal = array null -> elips).
+    let shapes: Array<{ points: Array<{ x: number; y: number }>; kind: string } | null> = [];
+    if (fromBubbles && boxes.length) {
+      onEvent({
+        percent: base + span * 0.82,
+        stage: "overlay",
+        message: `Halaman ${i + 1}/${N}: ekstraksi bentuk ${boxes.length} bubble...`,
+        currentPage: i,
+        totalPages: N,
+        pageIndex: i,
+        pagePatch: { stage: "overlay", translated: 0 },
+      });
+      shapes = await extractBubbleShapes(
+        normalized,
+        boxes.map((b) => b.bbox),
+      );
+    }
+    const items = boxes.map((b, k) => ({
+      text: idTexts[k],
+      bbox: b.bbox,
+      polygon: shapes[k]?.points,
+      kind: shapes[k]?.kind,
+    }));
+    // overlayTranslations tidak pernah throw (gagal -> gambar asli), tapi
+    // bungkus sekali lagi agar 1 halaman gagal tidak menggugurkan 1 job.
+    let outBuf: Buffer;
+    try {
+      outBuf = items.length ? await overlayTranslations(normalized, items) : normalized;
+    } catch {
+      outBuf = normalized;
+    }
     // Nama output = nama file asli (ekstensi dipaksa .png). Anti tabrakan
     // kalau ada basename kembar dari folder berbeda di ZIP/RAR.
     const rawBase = path.parse(img.name).name || `page-${i + 1}`;
