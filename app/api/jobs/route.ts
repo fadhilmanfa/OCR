@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { resolveOcrEngine } from "@/lib/ocrComicsPlus";
+import { googleVisionConfig } from "@/lib/ocrGoogleVision";
 import { openRouterConfig } from "@/lib/translate";
 import { collectImages, processCollectedImages } from "@/lib/processJob";
 import { completeJob, createJob, failJob, initPages, patchJob, patchPage } from "@/lib/jobs";
@@ -47,6 +48,27 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
+    // Key Google TERPISAH dari key OpenRouter agar kombinasi
+    // translate-openrouter + OCR-google_vision bisa dipakai bersamaan.
+    const googleKeyField = form.get("googleApiKey");
+    const { apiKey: googleApiKey } = googleVisionConfig(
+      typeof googleKeyField === "string" ? googleKeyField : undefined,
+    );
+    if (ocrEngine === "google_vision" && !googleApiKey) {
+      return NextResponse.json(
+        { error: "Masukkan API key Google Vision di UI atau atur GOOGLE_VISION_API_KEY di .env." },
+        { status: 400 },
+      );
+    }
+    // Region bubble "google" hanya sah dengan OCR google_vision (teks dan
+    // region harus dari response API yang sama). Gagal eksplisit di sini
+    // agar tak ada perilaku diam-diam.
+    if (bubbleParam === "google" && ocrEngine !== "google_vision") {
+      return NextResponse.json(
+        { error: "Deteksi bubble 'Google' butuh OCR engine 'Google Vision'. Pilih keduanya, atau kembalikan bubble ke Ogkalu/Psimera." },
+        { status: 400 },
+      );
+    }
 
     const files = form.getAll("files").filter((v): v is File => v instanceof File && v.size > 0);
     const limited = files.slice(0, 50);
@@ -87,6 +109,7 @@ export async function POST(req: Request) {
           bubbleParam,
           ocrEngine,
           apiKey,
+          googleApiKey,
           onProgress: (e) => {
             patchJob(jobId, {
               percent: e.percent,

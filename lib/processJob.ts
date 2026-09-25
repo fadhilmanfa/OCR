@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { ocrBubbleCrops, ocrEnglish, type BBox } from "@/lib/ocr";
 import { ocrComicsPlus, type OcrEngine } from "@/lib/ocrComicsPlus";
 import { ocrVisionBubbleCrops } from "@/lib/ocrVisionLLM";
+import { ocrGoogleBubbleCrops, ocrGoogleFullPage, ocrGooglePageDetail, mergeVisionBlocks, findRegionForBox } from "@/lib/ocrGoogleVision";
 import { bubbleEnabled, cropBubble, detectBubbles } from "@/lib/bubble";
 import { extractBubbleShapes } from "@/lib/bubbleShape";
 import { translateBatch } from "@/lib/translate";
@@ -116,12 +117,27 @@ export async function processCollectedImages(
     bubbleParam: string;
     ocrEngine: OcrEngine;
     apiKey?: string;
+    // Key KHUSUS Google Vision (terpisah dari apiKey OpenRouter agar
+    // kombinasi translate-openrouter + OCR-google_vision bisa dipakai
+    // bersamaan). Dibaca oleh jalur google_vision saja.
+    googleApiKey?: string;
     onProgress?: ProgressCallback;
   },
 ): Promise<{ pages: PageResult[]; provider: string; ocrEngine: OcrEngine }> {
   const { jobId, jobDir, provider, bubbleParam, ocrEngine } = opts;
   const onEvent = opts.onProgress ?? noop;
   const N = images.length;
+
+  // Sumber region bubble "google" (pengganti YOLO) HANYA sah dipasangkan
+  // dengan OCR google_vision: teks paragraf dan region blok harus dari
+  // response API yang sama agar berkorespondensi 1:1. Throw di awal
+  // (job gagal eksplisit, bukan perilaku diam-diam).
+  const useGoogleRegions = bubbleParam === "google";
+  if (useGoogleRegions && ocrEngine !== "google_vision") {
+    throw new Error(
+      "Deteksi bubble 'Google' butuh OCR engine 'Google Vision'. Pilih keduanya, atau kembalikan bubble ke Ogkalu/Psimera.",
+    );
+  }
 
   onEvent({
     percent: 6,
@@ -143,25 +159,35 @@ export async function processCollectedImages(
   onEvent({
     percent: 12,
     stage: "bubble",
-    message: useComics ? "OCR comics_text_plus (FCENet+MASTER)..." : "Deteksi bubble YOLO...",
+    message: useComics
+      ? "OCR comics_text_plus (FCENet+MASTER)..."
+      : useGoogleRegions
+        ? "Region bubble Google Vision..."
+        : "Deteksi bubble YOLO...",
     currentPage: 0,
     totalPages: N,
   });
   const comicsLists = useComics ? await ocrComicsPlus(normalizedList) : null;
-  const useBubble = !useComics && bubbleEnabled(bubbleParam !== "0");
+  // useGoogleRegions melewati YOLO total (tanpa Python/model): region
+  // datang dari blok teks Google per halaman di dalam loop di bawah.
+  const useBubble = !useComics && !useGoogleRegions && bubbleEnabled(bubbleParam !== "0");
   const det = useBubble ? await detectBubbles(normalizedList, bubbleParam) : null;
   const bubbleLists = det?.lists ?? normalizedList.map(() => []);
   const bubbleModel = det?.model ?? "ogkalu";
   const bubbleTotal = bubbleLists.reduce((s, l) => s + (l?.length ?? 0), 0);
 
   // Umumkan jumlah bubble per halaman agar frontend bisa tampilkan langsung.
+  // (Google-regions belum tahu jumlahnya di titik ini — diumumkan per
+  // halaman di dalam loop.)
   for (let i = 0; i < N; i++) {
     onEvent({
       percent: 25,
       stage: "bubble",
       message: useComics
         ? `OCR awal selesai`
-        : `Terdeteksi ${bubbleTotal} bubble di ${N} halaman`,
+        : useGoogleRegions
+          ? `Region bubble dari Google (per halaman)`
+          : `Terdeteksi ${bubbleTotal} bubble di ${N} halaman`,
       currentPage: 0,
       totalPages: N,
       pageIndex: i,
@@ -207,7 +233,38 @@ export async function processCollectedImages(
     // True hanya bila boxes berasal dari crop bubble YOLO (bukan OCR
     // full-page / comics) — syarat ekstraksi kontur masuk akal.
     let fromBubbles = false;
-    if (useComics) {
+    // Jalur google-regions membawa polygon-nya sendiri (dari region blok,
+    // bukan dari bbox teks) — blok overlay di bawah memakainya langsung.
+    let regionPolys: Array<{ points: Array<{ x: number; y: number }>; kind: string } | null> | null = null;
+    if (useGoogleRegions) {
+      // ocrEngine === "google_vision" dijamin validasi di atas. Satu
+      // request DOCUMENT_TEXT_DETECTION memberi teks (paragraf) + region
+      // (blok merge): YOLO, crop, dan OCR kedua tidak diperlukan.
+      // Throw bila API error (kontrak no-fallback).
+      const detail = await ocrGooglePageDetail(normalized, opts.googleApiKey);
+      const regions = mergeVisionBlocks(detail.blocks, width, height);
+      const rshapes = await extractBubbleShapes(normalized, regions);
+      boxes = detail.paras.map((p) => ({ text: p.text, conf: p.conf, bbox: p.bbox }));
+      boxes.sort((a, b) => a.bbox.y0 - b.bbox.y0 || b.bbox.x0 - a.bbox.x0);
+      // regionPolys SEJAJAR dengan boxes terurut (dipetakan setelah sort).
+      regionPolys = boxes.map((b) => {
+        const ri = findRegionForBox(b.bbox, regions);
+        if (ri < 0 || !rshapes[ri]) return null;
+        return { points: rshapes[ri]!.points, kind: rshapes[ri]!.kind };
+      });
+      via = "google-vision-regions";
+      onEvent({
+        percent: base + span * 0.38,
+        stage: "ocr",
+        message: `Halaman ${i + 1}/${N}: ${boxes.length} teks di ${regions.length} region Google`,
+        currentPage: i,
+        totalPages: N,
+        pageIndex: i,
+        pagePatch: { stage: "ocr", bubbleCount: regions.length, ocrTexts: boxes.length, totalTexts: boxes.length, via },
+      });
+      // Hasil kosong = lanjut 0 box (BUKAN fallback ke YOLO/Tesseract —
+      // saklarnya ya dropdown bubble itu sendiri).
+    } else if (useComics) {
       boxes = comicsLists?.[i] ?? [];
       via = "comics-text-plus";
       onEvent({
@@ -245,7 +302,26 @@ export async function processCollectedImages(
       const crops = await Promise.all(bubbles.map((b) => cropBubble(normalized, b, width, height)));
       const valid = crops.filter((c): c is NonNullable<typeof c> => c !== null);
       const useVision = ocrEngine === "vision_llm";
-      const texts = useVision
+      const useGoogle = ocrEngine === "google_vision";
+      // google_vision SENGAJA tanpa try/catch peredam: API error harus
+      // throw (job gagal eksplisit, bukan fallback diam-diam ke Tesseract).
+      const texts = useGoogle
+        ? await ocrGoogleBubbleCrops(
+            valid.map((c) => c.buffer),
+            (done, total) => {
+              onEvent({
+                percent: base + span * (0.02 + (done / Math.max(total, 1)) * 0.33),
+                stage: "ocr",
+                message: `Halaman ${i + 1}/${N}: OCR google ${done}/${total} bubble`,
+                currentPage: i,
+                totalPages: N,
+                pageIndex: i,
+                pagePatch: { ocrTexts: done },
+              });
+            },
+            opts.googleApiKey,
+          )
+        : useVision
         ? await ocrVisionBubbleCrops(
             valid.map((c) => c.buffer),
             (done, total) => {
@@ -279,7 +355,11 @@ export async function processCollectedImages(
         t ? [{ text: t.text, conf: t.conf, bbox: valid[k].bbox }] : [],
       );
       boxes.sort((a, b) => a.bbox.y0 - b.bbox.y0 || b.bbox.x0 - a.bbox.x0);
-      via = useVision ? `yolo-${bubbleModel}+vision-llm` : `yolo-${bubbleModel}`;
+      via = useGoogle
+        ? `yolo-${bubbleModel}+google-vision`
+        : useVision
+          ? `yolo-${bubbleModel}+vision-llm`
+          : `yolo-${bubbleModel}`;
       fromBubbles = boxes.length > 0;
       onEvent({
         percent: base + span * 0.38,
@@ -290,7 +370,10 @@ export async function processCollectedImages(
         pageIndex: i,
         pagePatch: { ocrTexts: boxes.length, totalTexts: boxes.length, via },
       });
-      if (!boxes.length) {
+      // Hasil kosong google_vision = lanjut dengan 0 box (BUKAN fallback
+      // ke ocrEnglish — kontrak no-fallback engine ini; API error sendiri
+      // sudah throw di atas sehingga sampai sini hanya bila API sehat).
+      if (!boxes.length && !useGoogle) {
         boxes = await ocrEnglish(normalized, (p) => {
           onEvent({
             percent: base + span * (0.05 + p * 0.3),
@@ -305,16 +388,31 @@ export async function processCollectedImages(
         fromBubbles = false;
       }
     } else {
-      boxes = await ocrEnglish(normalized, (p) => {
-        onEvent({
-          percent: base + span * (0.02 + p * 0.33),
-          stage: "ocr",
-          message: `Halaman ${i + 1}/${N}: OCR penuh ${Math.round(p * 100)}%`,
-          currentPage: i,
-          totalPages: N,
-          pageIndex: i,
-        });
-      });
+      // Tanpa bubble YOLO: google_vision memakai DOCUMENT_TEXT_DETECTION
+      // full-page (throw bila API error — kontrak no-fallback).
+      const useGoogleFull = ocrEngine === "google_vision";
+      boxes = useGoogleFull
+        ? await ocrGoogleFullPage(normalized, (p) => {
+            onEvent({
+              percent: base + span * (0.02 + p * 0.33),
+              stage: "ocr",
+              message: `Halaman ${i + 1}/${N}: OCR google penuh ${Math.round(p * 100)}%`,
+              currentPage: i,
+              totalPages: N,
+              pageIndex: i,
+            });
+          }, opts.googleApiKey)
+        : await ocrEnglish(normalized, (p) => {
+            onEvent({
+              percent: base + span * (0.02 + p * 0.33),
+              stage: "ocr",
+              message: `Halaman ${i + 1}/${N}: OCR penuh ${Math.round(p * 100)}%`,
+              currentPage: i,
+              totalPages: N,
+              pageIndex: i,
+            });
+          });
+      if (useGoogleFull) via = "google-vision";
       onEvent({
         percent: base + span * 0.38,
         stage: "ocr",
@@ -360,9 +458,10 @@ export async function processCollectedImages(
     // Langkah baru: ekstraksi kontur bubble dari tiap crop (OpenCV) di
     // antara cropBubble() dan overlayTranslations(). Hanya untuk box dari
     // YOLO; box full-page/comics tidak punya bentuk bubble -> elips.
+    // Jalur google-regions sudah membawa polygon sendiri (regionPolys).
     // extractBubbleShapes tidak pernah throw (gagal = array null -> elips).
-    let shapes: Array<{ points: Array<{ x: number; y: number }>; kind: string } | null> = [];
-    if (fromBubbles && boxes.length) {
+    let shapes: Array<{ points: Array<{ x: number; y: number }>; kind: string } | null> = regionPolys ?? [];
+    if (!regionPolys && fromBubbles && boxes.length) {
       onEvent({
         percent: base + span * 0.82,
         stage: "overlay",

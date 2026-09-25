@@ -1,7 +1,9 @@
 import sharp from "sharp";
 import type { BBox } from "./ocr";
 
-const PAD = 2; // cukup untuk anti-alias, tidak memutihkan garis bingkai dekat teks
+const PAD = 2; // untuk layout teks fallback (area baca, bukan mask)
+const MASK_INSET = 1; // mask DICUPET 1px dari box: box YOLO sudah memeluk
+// outline, expand (+PAD seperti dulu) justru memutihkan ilustrasi di luar.
 const MIN_FONT = 10;
 const START_FONT = 22; // sengaja kecil agar teks ID muat rapi di dalam elips
 const FONT_FAMILY = "'Comic Sans MS', 'Comic Sans', cursive";
@@ -150,16 +152,17 @@ export async function overlayTranslations(
     const cleanShapes = items
       .map((it) => {
         if (validPolygon(it.polygon)) {
-          // Path kontur asli: fill menutup teks, stroke tipis menyegel
-          // sisa anti-alias di tepi outline tanpa memutihkan ilustrasi luar.
+          // Path kontur asli (sudah di tepi dalam outline): fill pas,
+          // stroke 1px saja untuk menyegel anti-alias. Stroke 2px dulu
+          // terbukti meluber memutihkan ilustrasi luar bubble.
           const d = esc(pathFromPolygon(it.polygon));
-          return `<path d="${d}" fill="white" stroke="white" stroke-width="2" stroke-linejoin="round"/>`;
+          return `<path d="${d}" fill="white" stroke="white" stroke-width="1" stroke-linejoin="round"/>`;
         }
         const b = it.bbox;
-        const x = Math.max(0, Math.floor(b.x0) - PAD);
-        const y = Math.max(0, Math.floor(b.y0) - PAD);
-        const w = Math.min(W - x, Math.ceil(b.x1 - b.x0) + PAD * 2);
-        const h = Math.min(H - y, Math.ceil(b.y1 - b.y0) + PAD * 2);
+        const x = Math.max(0, Math.floor(b.x0) + MASK_INSET);
+        const y = Math.max(0, Math.floor(b.y0) + MASK_INSET);
+        const w = Math.min(W - x, Math.ceil(b.x1 - b.x0) - MASK_INSET * 2);
+        const h = Math.min(H - y, Math.ceil(b.y1 - b.y0) - MASK_INSET * 2);
         if (w <= 4 || h <= 4) return "";
         const cx = x + w / 2;
         const cy = y + h / 2;

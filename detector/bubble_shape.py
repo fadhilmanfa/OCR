@@ -10,7 +10,14 @@ Output: SATU baris JSON ke stdout, urutan sama dengan input:
 
     [{"image": "crop0.png", "polygon": [[x, y], ...],
       "bbox": {"x0":..,"y0":..,"x1":..,"y1":..},
-      "shape": "contour", "kind": "ellipse", "conf": 0.9, "area_ratio": 0.6}]
+      "shape": "contour", "kind": "ellipse", "conf": 0.9, "area_ratio": 0.6,
+      "solidity": 0.97, "defects": 0, "max_defect_px": 0.0}]
+
+"solidity" = contourArea / convexHullArea dari kontur ASLI (sebelum
+approxPolyDP) — stabil terhadap parameter epsilon. "defects" = jumlah
+convexity defect signifikan (depth > DEFECT_FRAC * diagonal bbox,
+scale-invariant), "max_defect_px" = depth terbesar dalam piksel.
+Keduanya untuk kalibrasi threshold di scripts/debug-shapes.ts.
 
 Koordinat polygon = piksel LOKAL crop (0,0 = pojok kiri-atas crop).
 Sisi Node yang menggeser ke koordinat halaman (+left/+top).
@@ -43,6 +50,19 @@ import sys
 # di bawah ini; kalau lebih, sub-sampling merata).
 MAX_POINTS = 96
 
+# Ambang klasifikasi bentuk (bisa dioverride via CLI/env untuk kalibrasi):
+#  - solidity > SOLIDITY_SMOOTH -> halus (ellipse/rect, dibedakan lagi
+#    via rectangularity di bawah),
+#  - solidity < SOLIDITY_FREE -> bergerigi (freeform),
+#  - di antaranya (zona abu-abu) -> convexity defects jadi penentu.
+SOLIDITY_SMOOTH = 0.92
+SOLIDITY_FREE = 0.85
+# Defect signifikan = depth > DEFECT_FRAC * diagonal bbox (scale-invariant).
+# OpenCV menyimpan depth dalam fixed-point (*256), jadi threshold
+# dikali 256 saat dibandingkan dengan nilai mentah.
+DEFECT_FRAC = 0.02
+DEFECT_MIN_COUNT = 3
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="bubble contour -> polygon")
@@ -58,6 +78,31 @@ def parse_args():
         type=float,
         default=float(os.environ.get("BUBBLE_SHAPE_MIN_AREA", "0.15")),
         help="luas kontur minimum (fraksi luas crop)",
+    )
+    # Knob kalibrasi klasifikasi (default = konstanta di atas).
+    p.add_argument(
+        "--solidity",
+        type=float,
+        default=float(os.environ.get("BUBBLE_SHAPE_SOLIDITY", str(SOLIDITY_SMOOTH))),
+        help="ambang solidity untuk bentuk halus",
+    )
+    p.add_argument(
+        "--solidity-free",
+        type=float,
+        default=float(os.environ.get("BUBBLE_SHAPE_SOLIDITY_FREE", str(SOLIDITY_FREE))),
+        help="ambang solidity bawah untuk freeform",
+    )
+    p.add_argument(
+        "--defect-frac",
+        type=float,
+        default=float(os.environ.get("BUBBLE_SHAPE_DEFECT_FRAC", str(DEFECT_FRAC))),
+        help="fraksi diagonal bbox untuk depth defect signifikan",
+    )
+    p.add_argument(
+        "--defect-min",
+        type=int,
+        default=int(os.environ.get("BUBBLE_SHAPE_DEFECT_MIN", str(DEFECT_MIN_COUNT))),
+        help="jumlah defect signifikan minimum untuk freeform di zona abu-abu",
     )
     return p.parse_args()
 
@@ -80,22 +125,75 @@ def empty_row(basename, w, h, reason="fallback"):
     }
 
 
-def classify(contour_area, peri, approx, bbox_w, bbox_h):
-    """Kasarkan bentuk jadi rect / ellipse / freeform (awan/kotak)."""
-    n = len(approx)
-    bbox_area = max(bbox_w * bbox_h, 1)
-    rectangularity = contour_area / bbox_area
-    circularity = (
-        4.0 * math.pi * contour_area / (peri * peri) if peri > 0 else 0.0
-    )
-    if n == 4 and rectangularity > 0.85:
-        return "rect"
-    if circularity > 0.72 and n >= 6:
-        return "ellipse"
-    return "freeform"
+def shape_metrics(cv2, contour, defect_frac):
+    """Solidity + convexity defects dari kontur ASLI (sebelum approxPolyDP).
+
+    approxPolyDP bisa menggeser rasio area, jadi metrik dihitung di sini
+    agar stabil terhadap parameter --epsilon. Return
+    (solidity, defect_count, max_depth_px). Gagal hitung -> (1.0, 0, 0.0)
+    (netral: tidak memaksa freeform maupun fallback).
+    """
+    try:
+        area = float(cv2.contourArea(contour))
+        hull = cv2.convexHull(contour)
+        hull_area = float(cv2.contourArea(hull))
+        solidity = min(1.0, area / hull_area) if hull_area > 0 else 1.0
+    except Exception:
+        return 1.0, 0, 0.0
+    # convexityDefects butuh hull berupa INDEX, bukan koordinat — maka
+    # convexHull dipanggil ulang dengan returnPoints=False. Bungkus
+    # try/except karena OpenCV melempar cv2.error untuk kontur degenerat
+    # (terlalu sedikit titik / kolinear) dan mengembalikan None bila
+    # kontur sudah konveks penuh.
+    try:
+        _x, _y, bw, bh = cv2.boundingRect(contour)
+        diag = math.hypot(bw, bh) or 1.0
+        hull_idx = cv2.convexHull(contour, returnPoints=False)
+        raw = cv2.convexityDefects(contour, hull_idx)
+        if raw is None:
+            return solidity, 0, 0.0
+        # Bentuk return berbeda antar versi OpenCV: (N,1,4) atau (N,4).
+        # reshape(-1,4) menangani keduanya (sumber IndexError umum).
+        depth_thr = defect_frac * diag * 256.0  # unit mentah OpenCV (*256)
+        count, mx = 0, 0.0
+        for _s, _e, _f, d in raw.reshape(-1, 4):
+            depth_px = float(d) / 256.0
+            mx = max(mx, depth_px)
+            if float(d) > depth_thr:
+                count += 1
+        return solidity, count, mx
+    except Exception:
+        return solidity, 0, 0.0
 
 
-def extract_one(cv2, np, img_path, epsilon, min_area_ratio):
+def classify_kind(solidity, defect_count, rectangularity,
+                  smooth_thr, free_thr, defect_min):
+    """ellipse / rect / freeform dari solidity + defects (skor gabungan).
+
+    - solidity > smooth_thr -> halus, KECUALI banyak defect signifikan
+      (gerigi dalam seperti lekukan awan: spike/thought-cloud yang
+      tertutup morph-close tetap menyisakan cekungan dalam) -> freeform;
+      jika tidak, rect vs ellipse via rectangularity (kotak memenuhi
+      bbox-nya ~penuh, oval ~pi/4). Ekor bubble biasa hanya menghasilkan
+      1-2 defect (< defect_min) sehingga oval berekor tetap ellipse.
+    - solidity < free_thr -> jelas bergerigi -> freeform.
+    - zona abu-abu di antaranya -> defect_count signifikan yang
+      memutuskan (banyak lekukan dalam = freeform).
+    """
+    if solidity > smooth_thr:
+        if defect_count >= defect_min:
+            return "freeform"
+        return "rect" if rectangularity > 0.90 else "ellipse"
+    if solidity < free_thr:
+        return "freeform"
+    if defect_count >= defect_min:
+        return "freeform"
+    return "rect" if rectangularity > 0.90 else "ellipse"
+
+
+def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
+                smooth_thr=SOLIDITY_SMOOTH, free_thr=SOLIDITY_FREE,
+                defect_frac=DEFECT_FRAC, defect_min=DEFECT_MIN_COUNT):
     import numpy as _np  # noqa: F401 (alias konsisten)
 
     basename = os.path.basename(img_path)
@@ -113,11 +211,10 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio):
     )
 
     # Tutup teks/garis tipis di dalam bubble supaya interior jadi solid.
-    # Kernel ~2% dari sisi terkecil (min 7, max 21) — cukup menutup huruf
-    # tanpa menghilangkan lekuk awan pikiran. Untuk awan pikiran, outline
-    # hitam yang saling memotong bisa memecah interior jadi sel-sel kecil;
-    # coba kernel progresif (kecil dulu agar oval/kotak tetap presisi,
-    # membesar hanya bila kontur terpecah) sampai dapat kandidat valid.
+    # Outline komik nyata tipis (2-3px): kernel kecil (3/5) dulu agar
+    # outline tidak terhapus (closing besar menyatukan interior dengan
+    # background putih -> background_only). Kernel membesar hanya bila
+    # kontur terpecah (awan pikiran) sampai dapat kandidat valid.
     def largest(binary_img):
         cnts = cv2.findContours(
             binary_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -129,38 +226,56 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio):
         top = max(contours, key=cv2.contourArea)
         return top, float(cv2.contourArea(top))
 
+    def touches_all_borders(bounding_rect):
+        x, y, bw, bh = bounding_rect
+        return (x <= 1 and y <= 1 and (x + bw) >= w - 1 and (y + bh) >= h - 1)
+
+    def is_background(contour_area, bounding_rect):
+        return (touches_all_borders(bounding_rect)
+                and contour_area / crop_area > 0.90)
+
     k0 = int(min(w, h) * 0.02)
-    base_k = max(7, min(21, k0 | 1))  # ganjil
-    kernels = sorted({base_k, min(31, base_k * 2 + 1), min(41, base_k * 3 + 1)})
+    base_k = max(3, min(15, k0 | 1))  # ganjil; floor 3 (bukan 7) demi outline tipis
+    kernels = sorted({3, 5, base_k, min(31, base_k * 2 + 1), min(41, base_k * 3 + 1)})
     crop_area = float(w * h)
-    best = None
-    area = 0.0
-    closed = binary
+    # Kumpulkan SEMUA kandidat valid (bukan background) dari tiap skala,
+    # lalu pilih yang TERLUAS (= bubble paling utuh). "Pertama valid"
+    # saja tidak cukup: di kernel kecil, awan bisa lolos sebagai 1 sel
+    # lingkaran (parsial) padahal kernel besar memberi gabungan utuh.
+    valid = []  # (area, closed_img, contour)
+    touched = None  # closed kernel terkecil yang background-like (untuk inversi)
     for k in kernels:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         cand, cand_area = largest(closed)
         if cand is None:
             continue
-        if cand_area / crop_area >= min_area_ratio:
-            best, area = cand, cand_area
-            break
-        # Simpan kandidat terbesar bila semua skala gagal (untuk pesan note).
-        if cand_area > area:
-            best, area = cand, cand_area
-
-    # Bubble gelap/berwarna: interior gelap -> binary terbalik bisa lebih benar.
-    # Coba sekali kalau kandidat pertama terlihat seperti background.
-    if best is not None:
-        x, y, bw, bh = cv2.boundingRect(best)
-        touches_all = x <= 1 and y <= 1 and (x + bw) >= w - 1 and (y + bh) >= h - 1
-        if touches_all and area / crop_area > 0.90:
-            inv = cv2.bitwise_not(closed)
-            alt, alt_area = largest(inv)
-            if alt is not None and alt_area / crop_area >= min_area_ratio:
-                best, area = alt, alt_area
-            else:
-                return empty_row(basename, w, h, "background_only")
+        if cand_area / crop_area < min_area_ratio:
+            continue
+        rect = cv2.boundingRect(cand)
+        if is_background(cand_area, rect):
+            if touched is None:
+                touched = closed
+            continue
+        valid.append((cand_area, closed, cand))
+    best = None
+    area = 0.0
+    closed = binary
+    if valid:
+        area, closed, best = max(valid, key=lambda t: t[0])
+    elif touched is not None:
+        # Semua skala = background -> coba binary terbalik sekali (bubble
+        # gelap/berwarna). Guard: hasil inversi yang JUGA background-like
+        # ditolak -> fallback (mencegah kontur sampah dari noise field
+        # seperti screentone yang batasnya menyentuh tepi crop).
+        inv = cv2.bitwise_not(touched)
+        alt, alt_area = largest(inv)
+        if (alt is not None and alt_area / crop_area >= min_area_ratio
+                and not is_background(alt_area, cv2.boundingRect(alt))):
+            best, area = alt, alt_area
+            closed = inv
+        else:
+            return empty_row(basename, w, h, "background_only")
 
     if best is None or area / crop_area < min_area_ratio:
         return empty_row(basename, w, h, "area_too_small")
@@ -186,16 +301,22 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio):
     if bw < 8 or bh < 8:
         return empty_row(basename, w, h, "bbox_too_small")
 
-    hull = cv2.convexHull(best)
-    hull_area = float(cv2.contourArea(hull)) or 1.0
-    solidity = min(1.0, area / hull_area)
+    # Metrik dari kontur ASLI (sebelum approxPolyDP) agar stabil
+    # terhadap --epsilon. Lihat shape_metrics().
+    solidity, defect_count, max_defect_px = shape_metrics(cv2, best, defect_frac)
     # Solidity rendah = bentuk aneh/terpotong -> tidak dipercaya.
     if solidity < 0.5:
         row = empty_row(basename, w, h, "low_solidity")
         row["area_ratio"] = round(area / crop_area, 4)
+        row["solidity"] = round(solidity, 4)
+        row["defects"] = defect_count
         return row
 
-    kind = classify(area, peri, approx, bw, bh)
+    # rectangularity dari kontur ASLI (lebih stabil daripada dari approx).
+    _bx, _by, _bw, _bh = cv2.boundingRect(best)
+    rectangularity = area / max(float(_bw * _bh), 1.0)
+    kind = classify_kind(solidity, defect_count, rectangularity,
+                         smooth_thr, free_thr, defect_min)
     polygon = [[round(float(px), 1), round(float(py), 1)] for px, py in approx]
     return {
         "image": basename,
@@ -210,6 +331,9 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio):
         "kind": kind,
         "conf": round(solidity, 4),
         "area_ratio": round(area / crop_area, 4),
+        "solidity": round(solidity, 4),
+        "defects": defect_count,
+        "max_defect_px": round(max_defect_px, 1),
     }
 
 
@@ -228,7 +352,10 @@ def main():
     out = []
     for img_path in args.images:
         try:
-            out.append(extract_one(cv2, np, img_path, args.epsilon, args.min_area_ratio))
+            out.append(extract_one(cv2, np, img_path, args.epsilon,
+                                   args.min_area_ratio, args.solidity,
+                                   args.solidity_free, args.defect_frac,
+                                   args.defect_min))
         except Exception as e:  # 1 crop gagal != job gagal
             base = os.path.basename(img_path)
             row = empty_row(base, 0, 0, "exception")

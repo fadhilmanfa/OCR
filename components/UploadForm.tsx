@@ -127,12 +127,14 @@ export default function UploadForm({
   const removeTimers = useRef<number[]>([]);
   const [uploading, setUploading] = useState(false);
   const disabled = sessionBusy || uploading;
-  const { provider, bubble, ocrEngine, apiKey } = settings;
+  const { provider, bubble, ocrEngine, apiKey, googleApiKey } = settings;
   const setProvider = (provider: string) => onSettingsChange({ ...settings, provider });
   const setBubble = (bubble: string) => onSettingsChange({ ...settings, bubble });
   const setOcrEngine = (ocrEngine: string) => onSettingsChange({ ...settings, ocrEngine });
   const setApiKey = (apiKey: string) => onSettingsChange({ ...settings, apiKey });
+  const setGoogleApiKey = (googleApiKey: string) => onSettingsChange({ ...settings, googleApiKey });
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [leaving, setLeaving] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -187,6 +189,9 @@ export default function UploadForm({
     form.append("ocrEngine", ocrEngine);
     if ((provider === "openrouter" || ocrEngine === "vision_llm") && apiKey.trim()) {
       form.append("apiKey", apiKey.trim());
+    }
+    if (ocrEngine === "google_vision" && (googleApiKey ?? "").trim()) {
+      form.append("googleApiKey", (googleApiKey ?? "").trim());
     }
     submitting.current = true;
     setUploading(true);
@@ -329,7 +334,8 @@ export default function UploadForm({
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="top" className="max-w-60">
-                      Cari di mana balon teksnya (YOLO). Tidak membaca tulisan,
+                      Cari di mana balon teksnya (YOLO, atau blok teks Google
+                      bila bubble = Google). Tidak membaca tulisan,
                       hanya menandai area bubble agar OCR lebih akurat.
                     </TooltipContent>
                   </Tooltip>
@@ -349,6 +355,12 @@ export default function UploadForm({
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <div className="flex items-center gap-3"><span>Psimera</span><OsBadges mac win /></div>
                         <div className="select-item-desc text-muted-foreground text-xs font-normal">Khusus halaman manga.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="google">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Google</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Tanpa YOLO, dari blok teks. Wajib OCR Google Vision.</div>
                       </div>
                     </SelectItem>
                     <SelectItem value="0">
@@ -375,7 +387,7 @@ export default function UploadForm({
                     </TooltipTrigger>
                     <TooltipContent side="top" className="max-w-60">
                       Baca apa tulisannya di dalam bubble (Tesseract, Comics
-                      Text Plus, Vision LLM). Output berupa teks + kotak kata.
+                      Text Plus, Vision LLM, Google Vision). Output berupa teks + kotak kata.
                     </TooltipContent>
                   </Tooltip>
                 </Label>
@@ -400,6 +412,12 @@ export default function UploadForm({
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <div className="flex items-center gap-3"><span>Vision LLM</span><OsBadges mac win /></div>
                         <div className="select-item-desc text-muted-foreground text-xs font-normal">Perlu API key OpenRouter.</div>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="google_vision">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center gap-3"><span>Google Vision</span><OsBadges mac win /></div>
+                        <div className="select-item-desc text-muted-foreground text-xs font-normal">Perlu API key Google (berbayar).</div>
                       </div>
                     </SelectItem>
                   </SelectContent>
@@ -433,6 +451,35 @@ export default function UploadForm({
               disabled={disabled}
             >
               {showApiKey ? "Sembunyikan" : "Tampilkan"}
+            </Button>
+          </div>
+        </div>
+      )}
+      {ocrEngine === "google_vision" && (
+        <div className="space-y-2">
+          <Label htmlFor="google-api-key">API key Google Vision</Label>
+          <div className="flex gap-2">
+            <Input
+              id="google-api-key"
+              type={showGoogleApiKey ? "text" : "password"}
+              value={googleApiKey ?? ""}
+              onChange={(event) => setGoogleApiKey(event.target.value)}
+              placeholder="AIza..."
+              autoComplete="off"
+              spellCheck={false}
+              disabled={disabled}
+              className="h-11 min-w-0 flex-1"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11"
+              onClick={() => setShowGoogleApiKey(!showGoogleApiKey)}
+              aria-controls="google-api-key"
+              aria-pressed={showGoogleApiKey}
+              disabled={disabled}
+            >
+              {showGoogleApiKey ? "Sembunyikan" : "Tampilkan"}
             </Button>
           </div>
         </div>

@@ -29,7 +29,8 @@ const execFileAsync = promisify(execFile);
 // ID engine yang dikirim dari UI (UploadForm) / query param (?ocrEngine=).
 // "tesseract" = default, kode lama, tidak diubah sama sekali.
 // "vision_llm" = Vision LLM via OpenRouter (lihat lib/ocrVisionLLM.ts).
-export type OcrEngine = "tesseract" | "comics_text_plus" | "vision_llm";
+// "google_vision" = Google Cloud Vision API (lihat lib/ocrGoogleVision.ts).
+export type OcrEngine = "tesseract" | "comics_text_plus" | "vision_llm" | "google_vision";
 export const DEFAULT_OCR_ENGINE: OcrEngine = "tesseract";
 
 // Normalisasi input user/env jadi salah satu ID valid. Nilai asing
@@ -40,6 +41,7 @@ export function resolveOcrEngine(requested?: string): OcrEngine {
     .trim();
   if (cand === "comics_text_plus") return "comics_text_plus";
   if (cand === "vision_llm") return "vision_llm";
+  if (cand === "google_vision") return "google_vision";
   return "tesseract";
 }
 

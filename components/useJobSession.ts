@@ -8,6 +8,7 @@ export interface ProcessingSettings {
   bubble: string;
   ocrEngine: string;
   apiKey: string;
+  googleApiKey: string;
 }
 
 interface Session {
@@ -18,7 +19,7 @@ interface Session {
 const STORAGE_KEY = "komik-ocr-session-v1";
 const EMPTY_SESSION: Session = {
   jobId: null,
-  settings: { provider: "auto", bubble: "ogkalu", ocrEngine: "tesseract", apiKey: "" },
+  settings: { provider: "auto", bubble: "ogkalu", ocrEngine: "tesseract", apiKey: "", googleApiKey: "" },
 };
 
 function readSession(): Session {
@@ -31,9 +32,10 @@ function readSession(): Session {
       jobId: typeof saved?.jobId === "string" && /^[a-z0-9]+$/i.test(saved.jobId) ? saved.jobId : null,
       settings: {
         provider: ["auto", "openrouter", "opencode"].includes(settings?.provider) ? settings.provider : "auto",
-        bubble: ["ogkalu", "psimera", "0"].includes(settings?.bubble) ? settings.bubble : "ogkalu",
-        ocrEngine: ["tesseract", "comics_text_plus", "vision_llm"].includes(settings?.ocrEngine) ? settings.ocrEngine : "tesseract",
+        bubble: ["ogkalu", "psimera", "google", "0"].includes(settings?.bubble) ? settings.bubble : "ogkalu",
+        ocrEngine: ["tesseract", "comics_text_plus", "vision_llm", "google_vision"].includes(settings?.ocrEngine) ? settings.ocrEngine : "tesseract",
         apiKey: typeof settings?.apiKey === "string" ? settings.apiKey : "",
+        googleApiKey: typeof settings?.googleApiKey === "string" ? settings.googleApiKey : "",
       },
     };
   } catch {
