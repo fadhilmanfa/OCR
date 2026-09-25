@@ -27,13 +27,22 @@ Default `auto` memakai Google gratis + fallback MyMemory (kaku/literal).
 Untuk hasil natural seperti komik terbitan:
 
 1. Daftar + ambil key di https://openrouter.ai/keys
-2. Isi `.env`:
+2. Masukkan API key di web setelah memilih penerjemah `OpenRouter` atau mesin OCR
+   `Vision LLM`. Alternatifnya, isi `.env`:
 
 ```bat
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-3. Pilih provider `openrouter` di form. Cek status key di `/api/health`.
+3. Pilih provider `openrouter` di form. Key dari UI diprioritaskan; jika kosong,
+   server memakai `OPENROUTER_API_KEY` dari env. Key UI disimpan di `sessionStorage`
+   selama sesi tab, sehingga tetap tersedia setelah refresh. Key tidak disimpan
+   dalam metadata job di server.
+   `/api/health` hanya menunjukkan status key env, tanpa menampilkan nilainya.
+
+API menerima field `apiKey` opsional dalam multipart body `/api/jobs` dan
+`/api/process`, atau JSON body `/api/translate-text`. Key dikirim lewat body,
+bukan query URL, dan tidak disertakan dalam progress atau hasil job.
 
 > Konten dewasa: sebagian model menolak/menyensor. Untuk komik dewasa,
 > set `OPENROUTER_MODEL=z-ai/glm-5.3-flash`
@@ -128,14 +137,38 @@ Cek kesehatan + status key: http://localhost:3000/api/health
 2. Provider `auto` untuk default gratis (atau `openrouter` bila sudah isi key).
 3. Klik Proses → tunggu (OCR 10–60 detik/halaman) → preview Before/After → Download ZIP/PDF.
 
+### Sesi dan masa simpan hasil
+
+Hasil disimpan selama **10 menit sejak pemrosesan selesai**, lalu folder job
+beserta PNG, ZIP, PDF, dan metadata dihapus otomatis. Refresh, polling, dan
+unduhan tidak memperpanjang batas waktu. File parsial job gagal dibersihkan
+10 menit sejak kegagalan. Hitung mundur ditampilkan di halaman hasil.
+
+Sesi tab menyimpan ID job terakhir, pilihan pemrosesan, dan API key. Refresh
+melanjutkan pemantauan job yang sudah diterima server atau menampilkan hasil
+yang masih tersedia. File yang belum selesai diunggah perlu dipilih kembali.
+Tombol **Proses baru** mempertahankan pengaturan dan key. Sesi tidak dijanjikan
+lintas perangkat atau setelah tab ditutup.
+
+Cleanup berjalan pada satu server Node.js yang terus hidup, termasuk tanpa
+halaman browser terbuka. Jika server mati, cleanup dilanjutkan saat startup:
+hasil selesai dipulihkan dari metadata, job terputus ditandai gagal, dan folder
+lama tanpa metadata dibersihkan berdasarkan umur folder. Pemeriksaan ulang
+setiap menit menangani penghapusan yang gagal. Jangan gunakan beberapa instance
+server yang berbagi folder `outputs` dengan mekanisme ini.
+
+Respons hasil dan status terminal memuat `expiresAt` (timestamp milidetik).
+Endpoint output/status menggunakan `Cache-Control: no-store`; hasil kedaluwarsa
+mengembalikan `410` sebelum cleanup atau `404` setelah dihapus.
+
 ### 2.3 Konfigurasi env (`.env`)
 
-Yang **wajib** hanya 1 variabel per fitur opsional yang dipakai, sisanya
-ada default di kode.
+API key OpenRouter wajib tersedia lewat UI atau env jika fiturnya dipakai.
+Pengaturan lainnya memiliki default di kode.
 
 | Variabel | Wajib? | Default | Keterangan |
 |---|---|---|---|
-| `OPENROUTER_API_KEY` | Ya, kalau provider `openrouter` / engine `vision_llm` | — | Ambil di openrouter.ai/keys |
+| `OPENROUTER_API_KEY` | Jika key belum diisi di UI untuk `openrouter` / `vision_llm` | — | Ambil di openrouter.ai/keys |
 | `OPENROUTER_MODEL` | Tidak | `google/gemini-2.5-flash` | Model translate LLM (konten dewasa: `z-ai/glm-5.3-flash`) |
 | `OPENROUTER_VISION_MODEL` | Tidak | `google/gemini-2.0-flash-001` | Model baca teks gambar |
 | `BUBBLE_ENABLED` | Tidak | `1` | `0` = matikan deteksi bubble total |
