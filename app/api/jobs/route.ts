@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { resolveOcrEngine } from "@/lib/ocrComicsPlus";
+import { openRouterConfig } from "@/lib/translate";
 import { collectImages, processCollectedImages } from "@/lib/processJob";
 import { completeJob, createJob, failJob, initPages, patchJob, patchPage } from "@/lib/jobs";
 
@@ -32,12 +33,20 @@ export async function POST(req: Request) {
 
   try {
     const form = await req.formData();
+    const apiKeyField = form.get("apiKey");
+    const { apiKey } = openRouterConfig(typeof apiKeyField === "string" ? apiKeyField : undefined);
     const providerField = form.get("provider");
     if (typeof providerField === "string" && providerField) provider = providerField;
     const bubbleField = form.get("bubble");
     if (typeof bubbleField === "string" && bubbleField) bubbleParam = bubbleField;
     const ocrField = form.get("ocrEngine");
     if (typeof ocrField === "string" && ocrField) ocrEngine = resolveOcrEngine(ocrField);
+    if ((provider === "openrouter" || ocrEngine === "vision_llm") && !apiKey) {
+      return NextResponse.json(
+        { error: "Masukkan API key OpenRouter di UI atau atur OPENROUTER_API_KEY di .env." },
+        { status: 400 },
+      );
+    }
 
     const files = form.getAll("files").filter((v): v is File => v instanceof File && v.size > 0);
     const limited = files.slice(0, 50);
@@ -77,6 +86,7 @@ export async function POST(req: Request) {
           provider,
           bubbleParam,
           ocrEngine,
+          apiKey,
           onProgress: (e) => {
             patchJob(jobId, {
               percent: e.percent,

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { translateBatch } from "@/lib/translate";
+import { openRouterConfig, translateBatch } from "@/lib/translate";
 
 export const runtime = "nodejs";
 
@@ -7,9 +7,10 @@ export const runtime = "nodejs";
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { texts, provider } = (body || {}) as {
+    const { texts, provider, apiKey: apiKeyField } = (body || {}) as {
       texts?: unknown;
       provider?: unknown;
+      apiKey?: unknown;
     };
     if (!Array.isArray(texts) || !texts.length) {
       return NextResponse.json(
@@ -17,9 +18,18 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
+    const { apiKey } = openRouterConfig(typeof apiKeyField === "string" ? apiKeyField : undefined);
+    if (provider === "openrouter" && !apiKey) {
+      return NextResponse.json(
+        { error: "Masukkan API key OpenRouter di UI atau atur OPENROUTER_API_KEY di .env." },
+        { status: 400 },
+      );
+    }
     const out = await translateBatch(
       texts.map(String),
       typeof provider === "string" ? provider : "auto",
+      undefined,
+      apiKey,
     );
     return NextResponse.json({ translations: out });
   } catch (e) {

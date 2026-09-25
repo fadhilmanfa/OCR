@@ -27,6 +27,7 @@
 //     berdasarkan conf, jadi aman.
 
 import { readFile } from "fs/promises";
+import { openRouterConfig } from "@/lib/translate";
 
 // Alamat API yang SAMA dengan translate (lihat lib/translate.ts).
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -52,10 +53,10 @@ export function visionModel(): string {
 
 // Header otentikasi — SAMA PERSIS dengan openRouterHeaders()
 // di lib/translate.ts (key yang sama, tidak perlu env baru).
-function openRouterHeaders(): Record<string, string> {
+function openRouterHeaders(apiKey: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${process.env.OPENROUTER_API_KEY || ""}`,
+    Authorization: `Bearer ${apiKey}`,
     // Direkomendasikan OpenRouter (boleh kosong, tapi bagus untuk ranking).
     "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "http://localhost:3000",
     "X-Title": process.env.OPENROUTER_APP_NAME || "komik-ocr-next",
@@ -90,13 +91,13 @@ function cleanVisionText(raw: string): string {
 //           rate-limit, response kosong) -> return "" (TIDAK PERNAH throw),
 //           supaya 1 bubble gagal tidak menggagalkan seluruh halaman.
 // ---------------------------------------------------------------------------
-export async function ocrVisionLLM(image: Buffer | string): Promise<string> {
-  const apiKey = process.env.OPENROUTER_API_KEY || "";
+export async function ocrVisionLLM(image: Buffer | string, requestApiKey?: string): Promise<string> {
+  const { apiKey } = openRouterConfig(requestApiKey);
   if (!apiKey) {
     // Sama seperti translate: tanpa key, OpenRouter pasti 401.
     // Log sekali per bubble gagal, lalu kembalikan "".
     console.error(
-      "[vision-llm] OPENROUTER_API_KEY belum diisi. Isi di file .env lalu restart 'npm run dev'.",
+      "[vision-llm] API key OpenRouter belum diisi. Masukkan di UI atau atur OPENROUTER_API_KEY di .env.",
     );
     return "";
   }
@@ -131,7 +132,7 @@ export async function ocrVisionLLM(image: Buffer | string): Promise<string> {
     try {
       res = await fetch(OPENROUTER_URL, {
         method: "POST",
-        headers: openRouterHeaders(),
+        headers: openRouterHeaders(apiKey),
         signal: controller.signal,
         body: JSON.stringify({
           model: visionModel(),
@@ -168,7 +169,7 @@ export async function ocrVisionLLM(image: Buffer | string): Promise<string> {
       const t = await res.text().catch(() => "");
       if (res.status === 401) {
         console.error(
-          "[vision-llm] 401: API key salah/kadaluarsa. Cek OPENROUTER_API_KEY di .env.",
+          "[vision-llm] 401: API key salah/kadaluarsa. Cek key di UI atau OPENROUTER_API_KEY di .env.",
         );
       } else if (res.status === 402) {
         console.error(
@@ -217,6 +218,7 @@ export async function ocrVisionLLM(image: Buffer | string): Promise<string> {
 export async function ocrVisionBubbleCrops(
   crops: Buffer[],
   onProgress?: (done: number, total: number) => void,
+  apiKey?: string,
 ): Promise<Array<{ text: string; conf: number } | null>> {
   const out: Array<{ text: string; conf: number } | null> = new Array(
     crops.length,
@@ -234,7 +236,7 @@ export async function ocrVisionBubbleCrops(
     while (true) {
       const i = next++;
       if (i >= crops.length) return;
-      const text = await ocrVisionLLM(crops[i]);
+      const text = await ocrVisionLLM(crops[i], apiKey);
       // conf = 99 dummy: Vision LLM tidak punya skor confidence.
       // Route tidak memfilter berdasarkan conf (hanya memakai text),
       // jadi angka ini tidak mempengaruhi hasil.

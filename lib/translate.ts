@@ -10,9 +10,9 @@ export interface OpenRouterConfig {
   model: string;
 }
 
-export function openRouterConfig(): OpenRouterConfig {
+export function openRouterConfig(apiKey?: string): OpenRouterConfig {
   return {
-    apiKey: process.env.OPENROUTER_API_KEY || "",
+    apiKey: apiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim() || "",
     // Default: murah + bagus untuk EN->ID. Bisa diganti di .env, misal:
     //  - "google/gemini-2.5-flash" (murah/cepat)
     //  - "deepseek/deepseek-chat" (murah, natural)
@@ -90,8 +90,7 @@ const OPENROUTER_SYSTEM_PROMPT =
   "Pertahankan nama orang/tempat, jangan terjemahkan SFX (mis. BOOM, WHAM). " +
   "Jangan tambah penjelasan, hanya keluarkan terjemahan.";
 
-function openRouterHeaders(): Record<string, string> {
-  const { apiKey } = openRouterConfig();
+function openRouterHeaders(apiKey: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
@@ -104,18 +103,19 @@ function openRouterHeaders(): Record<string, string> {
 async function openRouterChat(
   userContent: string,
   temperature = 0.3,
+  requestApiKey?: string,
 ): Promise<string> {
-  const { apiKey, model } = openRouterConfig();
+  const { apiKey, model } = openRouterConfig(requestApiKey);
   if (!apiKey) {
     throw new Error(
-      "OPENROUTER_API_KEY belum diisi. Isi di file .env lalu restart 'npm run dev'.",
+      "API key OpenRouter belum diisi. Masukkan di UI atau atur OPENROUTER_API_KEY di .env.",
     );
   }
   let res: Response;
   try {
     res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: openRouterHeaders(),
+      headers: openRouterHeaders(apiKey),
       body: JSON.stringify({
         model,
         temperature,
@@ -134,7 +134,7 @@ async function openRouterChat(
     const t = await res.text().catch(() => "");
     if (res.status === 401) {
       throw new Error(
-        "openrouter 401: API key salah/kadaluarsa. Cek OPENROUTER_API_KEY di .env.",
+        "openrouter 401: API key salah/kadaluarsa. Cek key di UI atau OPENROUTER_API_KEY di .env.",
       );
     }
     if (res.status === 402) {
@@ -153,10 +153,12 @@ async function openRouterChat(
   return out.trim();
 }
 
-async function openRouterTranslate(text: string): Promise<string> {
+async function openRouterTranslate(text: string, apiKey?: string): Promise<string> {
   const out = await openRouterChat(
     `Terjemahkan teks komik bahasa Inggris berikut ke Bahasa Indonesia.\n` +
       `Hanya keluarkan hasil terjemahan, tanpa tanda kutip tambahan, tanpa penjelasan.\n\nTeks:\n${text}`,
+    0.3,
+    apiKey,
   );
   // Model kadang membungkus dengan kutip — kupas satu lapis.
   return out.replace(/^["“”']+|["“”']+$/g, "").trim() || out;
@@ -164,7 +166,7 @@ async function openRouterTranslate(text: string): Promise<string> {
 
 // Batch SEKALIGUS dalam 1 request (hemat biaya & cepat).
 // Format: kirim list bernomor, minta kembali JSON array murni.
-async function openRouterTranslateMany(texts: string[]): Promise<string[]> {
+async function openRouterTranslateMany(texts: string[], apiKey?: string): Promise<string[]> {
   if (!texts.length) return [];
   const numbered = texts
     .map((t, i) => `${i + 1}. ${t}`)
@@ -174,7 +176,7 @@ async function openRouterTranslateMany(texts: string[]): Promise<string[]> {
     `Jumlah baris: ${texts.length}. Wajib kembalikan TEPAT ${texts.length} terjemahan, urutan sama.\n` +
     `Balas HANYA dengan JSON array murni, tanpa markdown, tanpa penjelasan. Contoh: ["halo", "apa kabar"]\n\n` +
     numbered;
-  const raw = await openRouterChat(userContent, 0.3);
+  const raw = await openRouterChat(userContent, 0.3, apiKey);
 
   // 1) Coba parse JSON langsung (buang fence ```json bila ada).
   const cleaned = raw
@@ -247,9 +249,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function translateOne(
   text: string,
   provider = "auto",
+  apiKey?: string,
 ): Promise<string> {
   if (!text.trim()) return text;
-  if (provider === "openrouter") return openRouterTranslate(text);
+  if (provider === "openrouter") return openRouterTranslate(text, apiKey);
   if (provider === "opencode") return opencodeTranslate(text);
   // auto: google dulu, fallback mymemory
   try {
@@ -267,6 +270,7 @@ export async function translateBatch(
   texts: string[],
   provider = "auto",
   onProgress?: (done: number, total: number) => void,
+  apiKey?: string,
 ): Promise<string[]> {
   if (provider === "openrouter") {
     const CHUNK = 30;
@@ -274,14 +278,14 @@ export async function translateBatch(
     for (let i = 0; i < texts.length; i += CHUNK) {
       const chunk = texts.slice(i, i + CHUNK);
       try {
-        out.push(...(await openRouterTranslateMany(chunk)));
+        out.push(...(await openRouterTranslateMany(chunk, apiKey)));
         onProgress?.(out.length, texts.length);
       } catch {
         // Chunk gagal -> fallback per-teks supaya 1 baris gagal
         // tidak menggugurkan semuanya.
         for (const t of chunk) {
           try {
-            out.push(await openRouterTranslate(t));
+            out.push(await openRouterTranslate(t, apiKey));
           } catch {
             out.push(t); // kembalikan asli
           }

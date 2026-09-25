@@ -3,7 +3,9 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { resolveOcrEngine } from "@/lib/ocrComicsPlus";
+import { openRouterConfig } from "@/lib/translate";
 import { collectImages, processCollectedImages } from "@/lib/processJob";
+import { completeJob, createJob, failJob } from "@/lib/jobs";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -15,6 +17,7 @@ const OUT_DIR = path.join(ROOT, "outputs");
 // Jalur baru dengan progress bar memakai POST /api/jobs + GET /api/jobs/[jobId].
 // Keduanya memakai pipeline yang sama di lib/processJob.ts.
 export async function POST(req: Request) {
+  let activeJobId: string | undefined;
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
   let provider = "auto";
@@ -34,6 +37,8 @@ export async function POST(req: Request) {
 
   try {
     const form = await req.formData();
+    const apiKeyField = form.get("apiKey");
+    const { apiKey } = openRouterConfig(typeof apiKeyField === "string" ? apiKeyField : undefined);
     const providerField = form.get("provider");
     if (typeof providerField === "string" && providerField) {
       provider = providerField;
@@ -45,6 +50,12 @@ export async function POST(req: Request) {
     const ocrField = form.get("ocrEngine");
     if (typeof ocrField === "string" && ocrField) {
       ocrEngine = resolveOcrEngine(ocrField);
+    }
+    if ((provider === "openrouter" || ocrEngine === "vision_llm") && !apiKey) {
+      return NextResponse.json(
+        { error: "Masukkan API key OpenRouter di UI atau atur OPENROUTER_API_KEY di .env." },
+        { status: 400 },
+      );
     }
     const files = form.getAll("files").filter(
       (v): v is File => v instanceof File && v.size > 0,
@@ -63,6 +74,8 @@ export async function POST(req: Request) {
       Date.now().toString(36) + crypto.randomBytes(3).toString("hex");
     const jobDir = path.join(OUT_DIR, jobId);
     fs.mkdirSync(jobDir, { recursive: true });
+    activeJobId = jobId;
+    createJob(jobId, images.length);
 
     const { pages } = await processCollectedImages(images, {
       jobId,
@@ -70,17 +83,19 @@ export async function POST(req: Request) {
       provider,
       bubbleParam,
       ocrEngine,
+      apiKey,
     });
 
-    return NextResponse.json({
+    const job = completeJob(jobId, {
       jobId,
       provider,
-      ocrEngine,
       pages,
       zipUrl: `/api/outputs/${jobId}/hasil.zip`,
       pdfUrl: `/api/outputs/${jobId}/hasil.pdf`,
     });
+    return NextResponse.json({ ...job?.result, ocrEngine });
   } catch (e) {
+    if (activeJobId) failJob(activeJobId, String((e as Error).message || e));
     console.error(e);
     return NextResponse.json(
       { error: String((e as Error).message || e) },

@@ -114,6 +114,7 @@ export async function processCollectedImages(
     provider: string;
     bubbleParam: string;
     ocrEngine: OcrEngine;
+    apiKey?: string;
     onProgress?: ProgressCallback;
   },
 ): Promise<{ pages: PageResult[]; provider: string; ocrEngine: OcrEngine }> {
@@ -254,6 +255,7 @@ export async function processCollectedImages(
                 pagePatch: { ocrTexts: done },
               });
             },
+            opts.apiKey,
           )
         : await ocrBubbleCrops(
             valid.map((c) => c.buffer),
@@ -338,7 +340,7 @@ export async function processCollectedImages(
         pageIndex: i,
         pagePatch: { translated: done, totalTexts: total },
       });
-    });
+    }, opts.apiKey);
 
     onEvent({
       percent: base + span * 0.85,
