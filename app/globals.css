@@ -123,6 +123,11 @@
   }
 }
 
+/* Deskripsi opsi hanya tampil di dalam dropdown, disembunyikan di trigger. */
+[data-slot="select-trigger"] .select-item-desc {
+  display: none;
+}
+
 @theme inline {
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;

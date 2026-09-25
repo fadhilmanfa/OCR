@@ -19,16 +19,11 @@ export default function PageCard({
 
   return (
     <article className="space-y-4 border-t py-6 first:border-t-0 first:pt-0">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold">Halaman {index + 1}</h3>
-          <p className="text-muted-foreground mt-0.5 truncate text-xs" title={page.file}>
-            {page.file}
-          </p>
-        </div>
-        <span className="text-muted-foreground shrink-0 text-xs">
-          {page.boxes.length} teks
-        </span>
+      <div className="min-w-0">
+        <h3 className="text-sm font-semibold">Halaman {index + 1}</h3>
+        <p className="text-muted-foreground mt-0.5 truncate text-xs" title={page.file}>
+          {page.file}
+        </p>
       </div>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img

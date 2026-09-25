@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Komik OCR EN → ID",
+  title: "OCR EN → ID",
   description:
     "Upload JPG/PNG/ZIP → OCR Inggris → auto-translate Indonesia → timpa teks ID.",
 };
@@ -45,7 +45,7 @@ export default function RootLayout({
                   <BookOpenText className="size-4" />
                 </span>
                 <span className="text-sm font-semibold tracking-tight">
-                  Komik OCR
+                  OCR
                 </span>
               </div>
               <ThemeToggle />
