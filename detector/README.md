@@ -32,19 +32,24 @@ Output = 1 baris JSON `[{image, boxes:[{x0,y0,x1,y1,conf}]}]`.
 ## Bentuk bubble (mask mengikuti kontur asli)
 
 `bubble_shape.py` mengekstrak polygon outline bubble dari tiap crop YOLO
-(OpenCV: Otsu threshold -> morph close progresif -> findContours terbesar
--> approxPolyDP), dipanggil SEKALI per halaman oleh `lib/bubbleShape.ts`
+atau region teks Google (OpenCV: Otsu dua polaritas + ambang putih -> morph
+close progresif -> pilih kontur tertutup yang memuat pusat region dan cocok
+warna interiornya -> approxPolyDP), dipanggil
+SEKALI per halaman oleh `lib/bubbleShape.ts`
 (pola bridge sama persis dengan deteksi: file sementara + stdout 1 baris
 JSON `[{image, polygon:[[x,y]...], bbox, shape, kind, conf}]`, koordinat
 lokal crop). `lib/overlay.ts` merender mask sebagai SVG `<path>` dari
-polygon dan memakai bbox KETAT polygon untuk fitFont teks ID.
+polygon dan mencari persegi aman di dalam kontur untuk menaruh teks ID.
+Interpreter dari `BUBBLE_SHAPE_PYTHON`/`BUBBLE_PYTHON` dipakai bila diisi;
+tanpa itu aplikasi mencoba `detector/.venv` lalu Python sistem.
 
-Kalau kontur gagal (bubble gelap/transparan, solidity rendah) baris itu
-kembali sebagai `"shape": "ellipse_fallback"` dan overlay memakai elips
-lama — proses tidak pernah gagal total. Cek manual:
+Kalau kontur gagal, baris itu kembali sebagai `"shape": "ellipse_fallback"`.
+Overlay memakai elips pada jalur YOLO dan kotak teks kecil pada jalur
+Google — proses tidak pernah gagal total. Cek manual:
 
 ```bat
 python scripts\make-shape-fixtures.py
+python scripts\test-shape-contours.py
 python detector\bubble_shape.py --images outputs\fixtures\shape-*.png
 npx tsx scripts/debug-shapes.ts <satu-komik.png>
 ```

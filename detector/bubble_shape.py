@@ -29,12 +29,11 @@ Kontrak fallback (JANGAN exit != 0 untuk crop yang gagal):
   - Hanya keluar != 0 kalau argumen / IO fatal (pattern sama dengan
     detector/detect.py: cetak {"error": ...} supaya Node bisa log hint).
 
-Pendekatan: bubble biasanya area terang (putih) dengan outline gelap.
-  gray -> blur -> Otsu threshold -> morph close (menutup teks di dalam
-  bubble) -> findContours EXTERNAL -> kontur terbesar -> approxPolyDP.
-Kalau kontur terbesar = background (menyentuh semua sisi + area > 90%),
-coba binary terbalik sekali (untuk bubble gelap/berwarna). Kalau masih
-gagal -> ellipse_fallback.
+Pendekatan: gray -> blur -> Otsu threshold dua polaritas + threshold
+terang -> morph close beberapa skala -> semua kontur eksternal. Pilih
+kontur utuh yang memuat seed region dan warna interiornya cocok dengan
+area seed, lalu approxPolyDP.
+Jika tidak ada kontur valid -> ellipse_fallback.
 
 Dependensi: opencv-python + numpy (sudah ikut via ultralytics, lihat
 detector/requirements.txt). TIDAK butuh torch — ringan & cepat.
@@ -67,6 +66,7 @@ DEFECT_MIN_COUNT = 3
 def parse_args():
     p = argparse.ArgumentParser(description="bubble contour -> polygon")
     p.add_argument("--images", nargs="+", required=True, help="path crop bubble")
+    p.add_argument("--seeds", nargs="*", help="titik pusat region lokal per crop: x,y")
     p.add_argument(
         "--epsilon",
         type=float,
@@ -193,7 +193,8 @@ def classify_kind(solidity, defect_count, rectangularity,
 
 def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
                 smooth_thr=SOLIDITY_SMOOTH, free_thr=SOLIDITY_FREE,
-                defect_frac=DEFECT_FRAC, defect_min=DEFECT_MIN_COUNT):
+                defect_frac=DEFECT_FRAC, defect_min=DEFECT_MIN_COUNT,
+                seed=None):
     import numpy as _np  # noqa: F401 (alias konsisten)
 
     basename = os.path.basename(img_path)
@@ -206,76 +207,64 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, binary = cv2.threshold(
+    otsu_level, binary = cv2.threshold(
         blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
+    # Otsu dapat menaruh panel berwarna dan bubble putih dalam kelas yang
+    # sama ketika garis hitam mendominasi histogram. Ambang terang kedua
+    # memisahkan bubble putih dari panel tan/oranye pada kasus ini.
+    _, bright = cv2.threshold(blur, max(200, int(otsu_level) + 35), 255, cv2.THRESH_BINARY)
 
-    # Tutup teks/garis tipis di dalam bubble supaya interior jadi solid.
-    # Outline komik nyata tipis (2-3px): kernel kecil (3/5) dulu agar
-    # outline tidak terhapus (closing besar menyatukan interior dengan
-    # background putih -> background_only). Kernel membesar hanya bila
-    # kontur terpecah (awan pikiran) sampai dapat kandidat valid.
-    def largest(binary_img):
+    # Cari seluruh kontur, bukan hanya yang terbesar. Pada crop Google,
+    # background/panel bisa lebih luas daripada bubble yang memuat teks.
+    def contours_of(binary_img):
         cnts = cv2.findContours(
             binary_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        # API 4.x -> (contours, hierarchy); 3.x -> (img, contours, hier).
-        contours = cnts[0] if len(cnts) == 2 else cnts[1]
-        if not contours:
-            return None, 0.0
-        top = max(contours, key=cv2.contourArea)
-        return top, float(cv2.contourArea(top))
-
-    def touches_all_borders(bounding_rect):
-        x, y, bw, bh = bounding_rect
-        return (x <= 1 and y <= 1 and (x + bw) >= w - 1 and (y + bh) >= h - 1)
-
-    def is_background(contour_area, bounding_rect):
-        return (touches_all_borders(bounding_rect)
-                and contour_area / crop_area > 0.90)
+        return cnts[0] if len(cnts) == 2 else cnts[1]
 
     k0 = int(min(w, h) * 0.02)
     base_k = max(3, min(15, k0 | 1))  # ganjil; floor 3 (bukan 7) demi outline tipis
     kernels = sorted({3, 5, base_k, min(31, base_k * 2 + 1), min(41, base_k * 3 + 1)})
     crop_area = float(w * h)
-    # Kumpulkan SEMUA kandidat valid (bukan background) dari tiap skala,
-    # lalu pilih yang TERLUAS (= bubble paling utuh). "Pertama valid"
-    # saja tidak cukup: di kernel kecil, awan bisa lolos sebagai 1 sel
-    # lingkaran (parsial) padahal kernel besar memberi gabungan utuh.
-    valid = []  # (area, closed_img, contour)
-    touched = None  # closed kernel terkecil yang background-like (untuk inversi)
-    for k in kernels:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        cand, cand_area = largest(closed)
-        if cand is None:
-            continue
-        if cand_area / crop_area < min_area_ratio:
-            continue
-        rect = cv2.boundingRect(cand)
-        if is_background(cand_area, rect):
-            if touched is None:
-                touched = closed
-            continue
-        valid.append((cand_area, closed, cand))
+    center = seed if seed is not None else (w / 2.0, h / 2.0)
+    sx = max(0, min(w - 1, int(round(center[0]))))
+    sy = max(0, min(h - 1, int(round(center[1]))))
+    radius = max(7, min(15, min(w, h) // 12))
+    seed_tone = float(_np.median(
+        gray[max(0, sy - radius):min(h, sy + radius + 1),
+             max(0, sx - radius):min(w, sx + radius + 1)]
+    ))
+    # Bubble harus memuat titik tengah region deteksi dan seluruh outline
+    # harus tertutup di dalam crop. Kontur yang menyentuh batas crop sering
+    # merupakan latar/panel yang menyatu dengan putih bubble; memilihnya
+    # menghasilkan blok putih besar di atas ilustrasi.
+    valid = []  # (kemiripan warna interior dengan seed, area, contour)
+    for polarity in (binary, cv2.bitwise_not(binary), bright):
+        for k in kernels:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            closed = cv2.morphologyEx(polarity, cv2.MORPH_CLOSE, kernel)
+            for cand in contours_of(closed):
+                cand_area = float(cv2.contourArea(cand))
+                if cand_area / crop_area < min_area_ratio:
+                    continue
+                x, y, bw, bh = cv2.boundingRect(cand)
+                if x <= 1 or y <= 1 or x + bw >= w - 1 or y + bh >= h - 1:
+                    continue
+                if cv2.pointPolygonTest(cand, center, False) < 0:
+                    continue
+                mask = _np.zeros((h, w), dtype=_np.uint8)
+                cv2.drawContours(mask, [cand], -1, 255, thickness=-1)
+                interior_tone = float(_np.median(gray[mask > 0]))
+                # Kontur panel bisa tertutup rapi dan lebih besar dari
+                # bubble. Warna interior bubble biasanya sama dengan area
+                # di sekitar titik teks; warna panel berbeda.
+                match = -round(abs(interior_tone - seed_tone) / 12.0)
+                valid.append((match, cand_area, cand))
     best = None
     area = 0.0
-    closed = binary
     if valid:
-        area, closed, best = max(valid, key=lambda t: t[0])
-    elif touched is not None:
-        # Semua skala = background -> coba binary terbalik sekali (bubble
-        # gelap/berwarna). Guard: hasil inversi yang JUGA background-like
-        # ditolak -> fallback (mencegah kontur sampah dari noise field
-        # seperti screentone yang batasnya menyentuh tepi crop).
-        inv = cv2.bitwise_not(touched)
-        alt, alt_area = largest(inv)
-        if (alt is not None and alt_area / crop_area >= min_area_ratio
-                and not is_background(alt_area, cv2.boundingRect(alt))):
-            best, area = alt, alt_area
-            closed = inv
-        else:
-            return empty_row(basename, w, h, "background_only")
+        _match, area, best = max(valid, key=lambda t: (t[0], t[1]))
 
     if best is None or area / crop_area < min_area_ratio:
         return empty_row(basename, w, h, "area_too_small")
@@ -339,6 +328,8 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
 
 def main():
     args = parse_args()
+    if args.seeds is not None and len(args.seeds) != len(args.images):
+        return fail(2, error="seed_count_mismatch")
     try:
         import cv2
         import numpy as np
@@ -350,12 +341,16 @@ def main():
         )
 
     out = []
-    for img_path in args.images:
+    for i, img_path in enumerate(args.images):
         try:
+            seed = None
+            if args.seeds is not None:
+                sx, sy = args.seeds[i].split(",", 1)
+                seed = (float(sx), float(sy))
             out.append(extract_one(cv2, np, img_path, args.epsilon,
                                    args.min_area_ratio, args.solidity,
                                    args.solidity_free, args.defect_frac,
-                                   args.defect_min))
+                                   args.defect_min, seed))
         except Exception as e:  # 1 crop gagal != job gagal
             base = os.path.basename(img_path)
             row = empty_row(base, 0, 0, "exception")

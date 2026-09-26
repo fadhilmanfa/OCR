@@ -30,6 +30,8 @@ export interface OverlayItem {
   polygon?: OverlayPolygonPoint[];
   /** Klasifikasi dari Python: rect | ellipse | freeform | unknown. */
   kind?: string;
+  /** Saat kontur gagal, kotak teks Google dibersihkan sebagai persegi. */
+  fallbackShape?: "rect";
 }
 
 function esc(s: string): string {
@@ -109,6 +111,73 @@ function polygonBBox(poly: OverlayPolygonPoint[]): BBox {
   return { x0, y0, x1, y1 };
 }
 
+function pointInPolygon(x: number, y: number, poly: OverlayPolygonPoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Cari persegi terbesar yang benar-benar berada di dalam kontur. Faktor
+// lebar/tinggi tetap tidak cukup untuk bubble kotak, awan, dan berekor.
+function safeTextRect(poly: OverlayPolygonPoint[]): { x: number; y: number; w: number; h: number } | null {
+  const b = polygonBBox(poly);
+  const width = b.x1 - b.x0;
+  const height = b.y1 - b.y0;
+  if (width < 12 || height < 12) return null;
+  const cols = 32;
+  const rows = 32;
+  const dx = width / cols;
+  const dy = height / rows;
+  const heights = Array<number>(cols).fill(0);
+  let best: { x: number; y: number; w: number; h: number; score: number } | null = null;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const x = b.x0 + (col + 0.5) * dx;
+      const y = b.y0 + (row + 0.5) * dy;
+      heights[col] = pointInPolygon(x, y, poly) ? heights[col] + 1 : 0;
+    }
+    const stack: number[] = [];
+    for (let col = 0; col <= cols; col++) {
+      const current = col === cols ? 0 : heights[col];
+      while (stack.length && heights[stack[stack.length - 1]] > current) {
+        const at = stack.pop()!;
+        const left = stack.length ? stack[stack.length - 1] + 1 : 0;
+        const cellsW = col - left;
+        const cellsH = heights[at];
+        const area = cellsW * cellsH;
+        const cx = (left + col) / 2 / cols;
+        const cy = (row + 1 - cellsH / 2) / rows;
+        const distance = Math.hypot(cx - 0.5, cy - 0.5);
+        const score = area * (1 - Math.min(0.4, distance * 0.5));
+        if (!best || score > best.score) {
+          best = {
+            x: b.x0 + left * dx,
+            y: b.y0 + (row + 1 - cellsH) * dy,
+            w: cellsW * dx,
+            h: cellsH * dy,
+            score,
+          };
+        }
+      }
+      stack.push(col);
+    }
+  }
+  if (!best) return null;
+  const inset = Math.max(2, Math.min(dx, dy));
+  return {
+    x: best.x + inset,
+    y: best.y + inset,
+    w: Math.max(0, best.w - inset * 2),
+    h: Math.max(0, best.h - inset * 2),
+  };
+}
+
 // Faktor inner sesuai bentuk: rect penuh, elips standar, freeform konservatif.
 function innerFactor(kind: string | undefined): { w: number; h: number } {
   if (kind === "rect") return { w: RECT_INNER_W, h: RECT_INNER_H };
@@ -116,16 +185,16 @@ function innerFactor(kind: string | undefined): { w: number; h: number } {
   return { w: ELLIPSE_INNER_W, h: ELLIPSE_INNER_H };
 }
 
-// Area efektif untuk teks: bbox KETAT polygon (bukan bbox YOLO mentah)
-// supaya teks tidak keluar dari bentuk asli bubble. Fallback = bbox YOLO + PAD.
+// Area efektif untuk teks: persegi aman di dalam polygon.
+// Fallback = bbox deteksi/teks + PAD.
 function textBox(it: OverlayItem, W: number, H: number): { x: number; y: number; w: number; h: number } {
   if (validPolygon(it.polygon)) {
-    const pb = polygonBBox(it.polygon);
-    const x = Math.max(0, Math.floor(pb.x0));
-    const y = Math.max(0, Math.floor(pb.y0));
-    const w = Math.min(W - x, Math.ceil(pb.x1 - pb.x0));
-    const h = Math.min(H - y, Math.ceil(pb.y1 - pb.y0));
-    return { x, y, w, h };
+    const safe = safeTextRect(it.polygon);
+    if (safe && safe.w > 10 && safe.h > 10) {
+      const x = Math.max(0, safe.x);
+      const y = Math.max(0, safe.y);
+      return { x, y, w: Math.min(W - x, safe.w), h: Math.min(H - y, safe.h) };
+    }
   }
   const b = it.bbox;
   const x = Math.max(0, Math.floor(b.x0) - PAD);
@@ -138,7 +207,7 @@ function textBox(it: OverlayItem, W: number, H: number): { x: number; y: number;
 // items: [{ text (ID), bbox:{x0,y0,x1,y1}, polygon?, kind? }]
 // 1) tutup teks asli dengan PATH mengikuti kontur bubble (fallback: ELIPS
 //    putih seperti dulu bila polygon hilang/tidak valid), 2) tulis teks ID
-//    di tengah bbox KETAT polygon. Tidak pernah throw: gagal -> gambar asli.
+//    di tengah area aman polygon. Tidak pernah throw: gagal -> gambar asli.
 export async function overlayTranslations(
   inputBuffer: Buffer,
   items: OverlayItem[],
@@ -159,6 +228,13 @@ export async function overlayTranslations(
           return `<path d="${d}" fill="white" stroke="white" stroke-width="1" stroke-linejoin="round"/>`;
         }
         const b = it.bbox;
+        if (it.fallbackShape === "rect") {
+          const x = Math.max(0, Math.floor(b.x0) - PAD);
+          const y = Math.max(0, Math.floor(b.y0) - PAD);
+          const w = Math.min(W - x, Math.ceil(b.x1) + PAD - x);
+          const h = Math.min(H - y, Math.ceil(b.y1) + PAD - y);
+          return w > 4 && h > 4 ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="white"/>` : "";
+        }
         const x = Math.max(0, Math.floor(b.x0) + MASK_INSET);
         const y = Math.max(0, Math.floor(b.y0) + MASK_INSET);
         const w = Math.min(W - x, Math.ceil(b.x1 - b.x0) - MASK_INSET * 2);
@@ -187,7 +263,7 @@ export async function overlayTranslations(
       .map((it) => {
         const { x, y, w, h } = textBox(it, W, H);
         if (w <= 10 || h <= 10) return "";
-        const f = innerFactor(validPolygon(it.polygon) ? it.kind : undefined);
+        const f = validPolygon(it.polygon) ? { w: 1, h: 1 } : innerFactor(it.fallbackShape);
         const iw = w * f.w;
         const ih = h * f.h;
         const { fs, lines, lineH } = fitFont(it.text, iw - 8, ih - 8);

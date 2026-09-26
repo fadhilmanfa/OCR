@@ -4,7 +4,7 @@
 //  - tulis crop MENTAH (extract saja, tanpa upscale/grayscale) ke tmpdir,
 //  - panggil `python detector/bubble_shape.py --images ...` via execFile,
 //  - parse 1 baris JSON dari stdout,
-//  - GAGAL APAPUN -> array null (fallback elips di overlay). Tidak pernah throw.
+//  - GAGAL APAPUN -> array null (overlay memilih fallback per sumber). Tidak pernah throw.
 import { execFile } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -51,7 +51,12 @@ function num(name: string, def: number): number {
 function pythonCandidates(): string[] {
   const explicit = (process.env.BUBBLE_SHAPE_PYTHON || process.env.BUBBLE_PYTHON || "").trim();
   if (explicit) return [explicit];
-  return process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
+  const local = path.join(
+    process.cwd(), "detector", ".venv",
+    process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+  );
+  const system = process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
+  return fs.existsSync(local) ? [local, ...system] : system;
 }
 
 function extractJson(stdout: string): unknown {
@@ -66,12 +71,19 @@ function extractJson(stdout: string): unknown {
   return JSON.parse(text.slice(start));
 }
 
-async function runShapeExtractor(files: string[], timeoutMs: number): Promise<unknown> {
+async function runShapeExtractor(
+  files: string[],
+  seeds: Array<{ x: number; y: number }>,
+  source: "yolo" | "google",
+  timeoutMs: number,
+): Promise<unknown> {
   const epsilon = Number(process.env.BUBBLE_SHAPE_EPSILON);
   const minArea = Number(process.env.BUBBLE_SHAPE_MIN_AREA);
   const args = [SCRIPT, "--images", ...files];
+  args.push("--seeds", ...seeds.map((s) => `${s.x},${s.y}`));
   if (Number.isFinite(epsilon) && epsilon > 0) args.push("--epsilon", String(epsilon));
   if (Number.isFinite(minArea) && minArea > 0) args.push("--min-area-ratio", String(minArea));
+  else if (source === "google") args.push("--min-area-ratio", "0.08");
   let lastErr: unknown = null;
   for (const bin of pythonCandidates()) {
     try {
@@ -100,8 +112,8 @@ interface RawShapeRow {
   conf?: unknown;
 }
 
-// Validasi 1 baris Python -> BubbleShape (koordinat halaman) atau null
-// (= fallback elips). Syarat: shape=contour, >=3 titik finite, bbox >=8px.
+// Validasi 1 baris Python -> BubbleShape (koordinat halaman) atau null.
+// Syarat: shape=contour, >=3 titik finite, bbox >=8px.
 function toShape(row: unknown, left: number, top: number, W: number, H: number): BubbleShape | null {
   try {
     const r = row as Partial<RawShapeRow>;
@@ -139,11 +151,12 @@ function toShape(row: unknown, left: number, top: number, W: number, H: number):
   }
 }
 
-// regions: bbox area bubble (biasanya bbox pad dari cropBubble) dalam
-// koordinat gambar `pageBuffer`. Return sejajar dengan input (null = elips).
+// regions: bbox area bubble (YOLO) atau teks (Google) dalam koordinat
+// gambar `pageBuffer`. Return sejajar dengan input (null = fallback).
 export async function extractBubbleShapes(
   pageBuffer: Buffer,
   regions: BBox[],
+  source: "yolo" | "google" = "yolo",
 ): Promise<BubbleShapeResult[]> {
   const none: BubbleShapeResult[] = regions.map(() => null);
   if (!regions.length || !fs.existsSync(SCRIPT)) return none;
@@ -153,7 +166,6 @@ export async function extractBubbleShapes(
   }
 
   const timeoutMs = num("BUBBLE_SHAPE_TIMEOUT_MS", 120000);
-  const pad = 8; // sama seperti cropBubble agar kontur dapat outline utuh
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ocr-shapes-"));
   try {
     const meta = await sharp(pageBuffer).metadata();
@@ -163,8 +175,15 @@ export async function extractBubbleShapes(
 
     const files: string[] = [];
     const origins: Array<{ left: number; top: number }> = [];
+    const seeds: Array<{ x: number; y: number }> = [];
     for (let i = 0; i < regions.length; i++) {
       const b = regions[i];
+      // Google memberi kotak TEKS, bukan kotak bubble. Perlu ruang jauh
+      // lebih besar agar outline bubble tidak terpotong oleh crop.
+      const span = Math.max(b.x1 - b.x0, b.y1 - b.y0);
+      const pad = source === "google"
+        ? Math.min(120, Math.max(16, Math.round(span * 0.45)))
+        : Math.min(80, Math.max(24, Math.round(span * 0.25)));
       const left = Math.max(0, Math.floor(b.x0 - pad));
       const top = Math.max(0, Math.floor(b.y0 - pad));
       const right = Math.min(W, Math.ceil(b.x1 + pad));
@@ -174,6 +193,7 @@ export async function extractBubbleShapes(
       if (w < 16 || h < 16) {
         files.push("");
         origins.push({ left, top });
+        seeds.push({ x: 0, y: 0 });
         continue;
       }
       // Crop MENTAH (tanpa upscale/grayscale) agar outline asli terjaga.
@@ -185,12 +205,15 @@ export async function extractBubbleShapes(
       fs.writeFileSync(f, buf);
       files.push(f);
       origins.push({ left, top });
+      seeds.push({ x: (b.x0 + b.x1) / 2 - left, y: (b.y0 + b.y1) / 2 - top });
     }
 
     const validIdx = files.map((f, i) => (f ? i : -1)).filter((i) => i >= 0);
     if (!validIdx.length) return none;
     const parsed = await runShapeExtractor(
       validIdx.map((i) => files[i]),
+      validIdx.map((i) => seeds[i]),
+      source,
       timeoutMs,
     );
     if (

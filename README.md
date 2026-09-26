@@ -68,6 +68,10 @@ Dropdown "Bubble YOLO" di form: `ogkalu` (barat + manga, default),
 Model (~52MB) di-download ke `detector/models/` (git-ignored).
 Preview "Asli" ikut digambari kotak bubble (nomor + confidence); gambar
 "Hasil ID" tetap bersih.
+Untuk bubble persegi, bulat, dan bentuk bebas, OpenCV mengambil kontur
+di dalam area deteksi. Teks terjemahan ditempatkan pada ruang aman di
+dalam kontur. Jika kontur tidak terbaca, jalur YOLO memakai elips;
+pilihan bubble Google memakai kotak teks kecil sebagai cadangan.
 
 ### 1.4 Opsional — Engine OCR comics_text_plus
 
@@ -204,7 +208,9 @@ Respons `pages[]` memuat `via` (`yolo-ogkalu` / `yolo-psimera` /
 
 ### 2.6 Batasan v1
 
-- Pembersihan = elips putih (bukan inpaint AI). Bagus untuk bubble putih komik barat.
+- Pembersihan = mask putih mengikuti kontur yang berhasil ditemukan (bukan inpaint AI).
+  Warna/tekstur bubble dan ilustrasi yang menyatu dengan kontur masih perlu
+  diperiksa pada preview hasil.
 - OCR = Tesseract.js. Kandidat bentuk/confidence buruk dilewati. Huruf stilasi / SFX
   masih bisa terlewat — cek preview.
 - Translate Google gratis bisa rate-limit (sudah ada jeda + fallback).

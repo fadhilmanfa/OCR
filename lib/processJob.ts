@@ -215,6 +215,7 @@ export async function processCollectedImages(
     const normalized = normalizedList[i];
     const { width = 0, height = 0 } = await sharp(normalized).metadata();
     const bubbles = bubbleLists[i] || [];
+    let pageBubbleCount = bubbles.length;
     const base = baseFor(N, i);
     const span = pageSpan(N);
 
@@ -243,15 +244,33 @@ export async function processCollectedImages(
       // Throw bila API error (kontrak no-fallback).
       const detail = await ocrGooglePageDetail(normalized, opts.googleApiKey);
       const regions = mergeVisionBlocks(detail.blocks, width, height);
-      const rshapes = await extractBubbleShapes(normalized, regions);
-      boxes = detail.paras.map((p) => ({ text: p.text, conf: p.conf, bbox: p.bbox }));
-      boxes.sort((a, b) => a.bbox.y0 - b.bbox.y0 || b.bbox.x0 - a.bbox.x0);
-      // regionPolys SEJAJAR dengan boxes terurut (dipetakan setelah sort).
-      regionPolys = boxes.map((b) => {
-        const ri = findRegionForBox(b.bbox, regions);
-        if (ri < 0 || !rshapes[ri]) return null;
-        return { points: rshapes[ri]!.points, kind: rshapes[ri]!.kind };
+      pageBubbleCount = regions.length;
+      const rshapes = await extractBubbleShapes(normalized, regions, "google");
+      // Beberapa paragraf dalam satu bubble harus menjadi SATU overlay.
+      // Sebelumnya tiap paragraf menulis di tengah polygon yang sama dan
+      // hasil terjemahan saling menimpa.
+      const grouped = new Map<number, typeof detail.paras>();
+      const ungrouped: typeof detail.paras = [];
+      for (const para of detail.paras) {
+        const ri = findRegionForBox(para.bbox, regions);
+        if (ri < 0) ungrouped.push(para);
+        else grouped.set(ri, [...(grouped.get(ri) || []), para]);
+      }
+      const entries = [...grouped.entries()].map(([ri, paras]) => {
+        paras.sort((a, b) => a.bbox.y0 - b.bbox.y0 || b.bbox.x0 - a.bbox.x0);
+        const bbox = paras.reduce((acc, p) => ({
+          x0: Math.min(acc.x0, p.bbox.x0), y0: Math.min(acc.y0, p.bbox.y0),
+          x1: Math.max(acc.x1, p.bbox.x1), y1: Math.max(acc.y1, p.bbox.y1),
+        }), { ...paras[0].bbox });
+        return {
+          box: { text: paras.map((p) => p.text).join(" "), conf: Math.min(...paras.map((p) => p.conf)), bbox },
+          shape: rshapes[ri] ? { points: rshapes[ri]!.points, kind: rshapes[ri]!.kind } : null,
+        };
       });
+      entries.push(...ungrouped.map((p) => ({ box: p, shape: null })));
+      entries.sort((a, b) => a.box.bbox.y0 - b.box.bbox.y0 || b.box.bbox.x0 - a.box.bbox.x0);
+      boxes = entries.map((e) => e.box);
+      regionPolys = entries.map((e) => e.shape);
       via = "google-vision-regions";
       onEvent({
         percent: base + span * 0.38,
@@ -459,7 +478,7 @@ export async function processCollectedImages(
     // antara cropBubble() dan overlayTranslations(). Hanya untuk box dari
     // YOLO; box full-page/comics tidak punya bentuk bubble -> elips.
     // Jalur google-regions sudah membawa polygon sendiri (regionPolys).
-    // extractBubbleShapes tidak pernah throw (gagal = array null -> elips).
+    // extractBubbleShapes tidak pernah throw (gagal = array null).
     let shapes: Array<{ points: Array<{ x: number; y: number }>; kind: string } | null> = regionPolys ?? [];
     if (!regionPolys && fromBubbles && boxes.length) {
       onEvent({
@@ -481,6 +500,7 @@ export async function processCollectedImages(
       bbox: b.bbox,
       polygon: shapes[k]?.points,
       kind: shapes[k]?.kind,
+      fallbackShape: regionPolys && !shapes[k] ? "rect" as const : undefined,
     }));
     // overlayTranslations tidak pernah throw (gagal -> gambar asli), tapi
     // bungkus sekali lagi agar 1 halaman gagal tidak menggugurkan 1 job.
@@ -505,7 +525,7 @@ export async function processCollectedImages(
       file: outName,
       url: `/api/outputs/${jobId}/${encodeURIComponent(outName)}`,
       via,
-      bubbleCount: bubbles.length,
+      bubbleCount: pageBubbleCount,
       boxes: boxes.map((b, k) => ({ en: b.text, id: idTexts[k], bbox: b.bbox })),
     });
     onEvent({
