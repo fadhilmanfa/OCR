@@ -141,7 +141,7 @@ export default function Home() {
               Terjemahkan komik
             </h1>
             <p className="text-muted-foreground max-w-xl text-sm leading-relaxed sm:text-base">
-              Unggah gambar atau arsip komik berbahasa Inggris. Baca hasil
+              Unggah gambar atau arsip komik berbahasa Inggris / Jepang / Indonesia / Mandarin. Baca hasil
               terjemahannya di sini, lalu unduh sebagai ZIP atau PDF.
             </p>
           </section>
@@ -176,7 +176,7 @@ export default function Home() {
             </h2>
             <div>
               {result.pages.map((p, i) => (
-                <PageCard key={`${p.file}-${i}`} page={p} index={i} />
+                <PageCard key={`${p.file}-${i}`} page={p} index={i} jobId={result.jobId} sourceLang={result.sourceLang} targetLang={result.targetLang} />
               ))}
             </div>
           </section>

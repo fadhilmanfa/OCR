@@ -1,6 +1,6 @@
-# Komik OCR EN → ID (Next.js)
+# Komik OCR EN / JA / ID / ZH (Next.js)
 
-Upload JPG/PNG/ZIP → OCR Inggris → auto-translate Indonesia → hapus teks asli → timpa teks ID.
+Upload JPG/PNG/ZIP → OCR Inggris/Jepang/Indonesia/Mandarin → auto-translate → hapus teks asli → timpa teks terjemahan.
 
 Satu project (frontend + API) memakai **Next.js 16 App Router + TypeScript + Tailwind**.
 
@@ -138,8 +138,35 @@ Cek kesehatan + status key: http://localhost:3000/api/health
 ### 2.2 Cara pakai
 
 1. Pilih JPG/PNG (boleh banyak, maks 50) atau ZIP berisi gambar.
-2. Provider `auto` untuk default gratis (atau `openrouter` bila sudah isi key).
-3. Klik Proses → tunggu (OCR 10–60 detik/halaman) → preview Before/After → Download ZIP/PDF.
+2. `Mode proses`:
+   - **Terjemahkan**: OCR → terjemah → timpa teks asli (default: per baris)
+     → teks terjemahan ditempel. Bubble yang teksnya tidak terbaca tetap
+     ditimpa satu bubble penuh agar tidak ada sisa huruf.
+   - **Bersihkan saja (cek timpa)**: hanya menimpa seluruh bubble, tanpa OCR
+     dan terjemahan. Dipakai untuk mengecek dulu coverage bubble; tidak
+     memakai kredit API dan jauh lebih cepat.
+3. Pilih bahasa `Dari → Ke` (Inggris / Jepang / Indonesia / Mandarin).
+4. Provider `auto` untuk default gratis (atau `openrouter` bila sudah isi key).
+5. `Bersih teks` menentukan cara timpa:
+   - **Per baris teks** (default UI): OCR melacak posisi tiap baris, lalu
+     hanya baris itu yang ditimpa (warna kertas). Kotak baris juga dipotong
+     ke kontur bubble, jadi mask tidak melewati garis outline. Outline bubble
+     dan ilustrasi tetap utuh — tidak ada blok/lingkaran putih yang oversize.
+   - **Warna bubble**: seluruh area bubble ditimpa dengan warna kertas dari
+     gambar, jadi bubble abu-abu/berwarna tidak menjadi putih.
+   - **Putih**: seluruh area bubble ditimpa putih solid (perilaku lama).
+   - **Tanpa hapus**: tidak menimpa apa pun (hanya berguna dengan mode
+     terjemahkan, untuk mengecek OCR).
+   API: kirim field/query `mode` (`translate`/`clean`) dan `cleanMode`
+   (`text`/`white`/`bubble`/`none`). Tanpa `cleanMode`, API lama tetap
+   `white`; UI memakai `text`. Mode `clean` hanya sah dengan deteksi bubble
+   Ogkalu/Psimera dan otomatis memakai mask bubble penuh karena tidak ada OCR.
+6. Klik Proses → tunggu (OCR 10–60 detik/halaman) → preview Before/After → Download ZIP/PDF.
+7. Bila ada teks yang terlewat, klik **Koreksi mask** di halaman hasil:
+   tarik untuk membuat kotak, geser untuk memindah, tarik handle untuk
+   mengubah ukuran. Latar bisa diganti **Hasil / Asli**. **Terapkan**
+   merender ulang halaman dari gambar asli (terjemahan tetap aman) dan
+   memperbarui ZIP/PDF. Mask manual disimpan selama sesi hasil masih ada.
 
 ### Sesi dan masa simpan hasil
 
@@ -154,6 +181,10 @@ yang masih tersedia. File yang belum selesai diunggah perlu dipilih kembali.
 Tombol **Proses baru** mempertahankan pengaturan dan key. Sesi tidak dijanjikan
 lintas perangkat atau setelah tab ditutup.
 
+Koreksi mask disimpan di server bersama hasil (gambar asli + metadata render)
+selama hasil belum kedaluwarsa. Koreksi **tidak memperpanjang** batas 10 menit;
+setelah itu halaman asli ikut terhapus dan editor tidak bisa dipakai lagi.
+
 Cleanup berjalan pada satu server Node.js yang terus hidup, termasuk tanpa
 halaman browser terbuka. Jika server mati, cleanup dilanjutkan saat startup:
 hasil selesai dipulihkan dari metadata, job terputus ditandai gagal, dan folder
@@ -166,6 +197,17 @@ Endpoint output/status menggunakan `Cache-Control: no-store`; hasil kedaluwarsa
 mengembalikan `410` sebelum cleanup atau `404` setelah dihapus.
 
 ### 2.3 Konfigurasi env (`.env`)
+
+### Setup terbaik (download besar tidak masalah)
+- Bubble: download kedua model (`python detector/download_model.py` tanpa `--only`):
+  `ogkalu ~52MB` untuk barat, `psimera ~23MB` untuk manga.
+- OCR:
+  - Sumber Inggris: `comics_text_plus` (venv Python 3.9 + checkpoint, lihat 1.4) paling akurat untuk huruf komik; fallback otomatis ke Tesseract.
+  - Sumber Jepang: `vision_llm` (butuh `OPENROUTER_API_KEY`) atau `google_vision` (butuh `GOOGLE_VISION_API_KEY`) — jauh lebih akurat dari Tesseract untuk kana/kanji, teks vertikal, dan huruf stilasi. Tesseract `jpn` lokal tetap didukung sebagai fallback offline (data diunduh otomatis oleh tesseract.js).
+  - Sumber Mandarin: `vision_llm` atau `google_vision` sangat disarankan karena Tesseract `chi_sim` lebih lemah untuk hanzi bergaya komik. Fallback lokal memakai `chi_sim` (diunduh otomatis oleh tesseract.js, ±20MB) dan hanya mendukung Mandarin Sederhana.
+  - Sumber Indonesia: `tesseract` bawaan cukup.
+- Translate natural: `openrouter` (butuh key). Rekomendasi model: umum `google/gemini-2.5-flash`, kualitas JP tinggi `google/gemini-2.5-pro` / `anthropic/claude-3.5-sonnet`, konten dewasa `z-ai/glm-5.3-flash`. `auto` (Google gratis + MyMemory) tetap ada tapi kaku/literal dan rawan rate-limit.
+- `comics_text_plus` hanya latin — untuk sumber Jepang/Indonesia/Mandarin otomatis fallback ke Tesseract (tercatat di `via`).
 
 API key OpenRouter wajib tersedia lewat UI atau env jika fiturnya dipakai.
 Pengaturan lainnya memiliki default di kode.
@@ -191,11 +233,14 @@ Prioritas nilai per-request: **form → query URL (`?provider=&bubble=&ocrEngine
 |---|---|---|
 | GET | `/api/health` | status + config OpenRouter/OpenCode (apakah key terpasang) |
 | POST | `/api/translate-text` | body `{ texts: string[], provider? }` |
-| POST | `/api/process?provider=auto&bubble=1&ocrEngine=tesseract` | multipart `files` (+ field `provider`/`bubble`/`ocrEngine` opsional, menang atas env) |
+| POST | `/api/process?provider=auto&bubble=1&ocrEngine=tesseract&cleanMode=text&mode=translate` | multipart `files` (+ field `provider`/`bubble`/`ocrEngine`/`cleanMode`/`mode` opsional, menang atas env) |
 | GET | `/api/outputs/<jobId>/<file>` | file hasil (png/zip/pdf) |
+| GET | `/api/jobs/<jobId>/editor?file=<file>` | data editor mask manual: ukuran, mask otomatis/manual, URL asli & hasil |
+| GET | `/api/jobs/<jobId>/source?file=<file>` | halaman asli (sebelum ditimpa) untuk background editor |
+| POST | `/api/jobs/<jobId>/mask` | body `{ file, rects: [{x0,y0,x1,y1}] }`; render ulang dari halaman asli lalu perbarui ZIP/PDF |
 
 Respons `pages[]` memuat `via` (`yolo-ogkalu` / `yolo-psimera` /
-`ocr-full`) dan `bubbleCount` selain `boxes`.
+`ocr-full`), `bubbleCount`, `undetected` (bubble tanpa teks OCR), dan `boxes`.
 
 ### 2.5 Catatan produksi
 
@@ -208,11 +253,21 @@ Respons `pages[]` memuat `via` (`yolo-ogkalu` / `yolo-psimera` /
 
 ### 2.6 Batasan v1
 
-- Pembersihan = mask putih mengikuti kontur yang berhasil ditemukan (bukan inpaint AI).
-  Warna/tekstur bubble dan ilustrasi yang menyatu dengan kontur masih perlu
-  diperiksa pada preview hasil.
+- Pembersihan mengikuti kontur/garis yang berhasil ditemukan (bukan inpaint AI).
+  Mode `text` (default UI) menimpa **per baris/paragraf hasil OCR**, sehingga
+  outline bubble dan ilustrasi tetap utuh. Mode `bubble` menimpa seluruh area
+  bubble dengan warna kertas; mode `white` memakai putih. Tanpa deteksi bubble,
+  mask kembali per kotak teks. Ilustrasi/tekstur yang menyatu dengan teks masih
+  perlu diperiksa pada preview hasil.
+- Bubble yang teksnya tidak terdeteksi **dibiarkan utuh** dan ditandai di UI.
+  Gunakan **Koreksi mask** untuk menandai manual; koreksi hanya menimpa area
+  (tidak menambah teks terjemahan). Halaman asli untuk render ulang disimpan
+  di folder job dan ikut terhapus saat TTL habis; koreksi tidak memperpanjang TTL.
 - OCR = Tesseract.js. Kandidat bentuk/confidence buruk dilewati. Huruf stilasi / SFX
-  masih bisa terlewat — cek preview.
+  masih bisa terlewat — cek preview. Mandarin Sederhana memakai `chi_sim`;
+  untuk akurasi hanzi yang lebih baik pilih `vision_llm`/`google_vision`.
+- Overlay memakai font CJK sistem (PingFang/Noto/YaHei) sebagai fallback,
+  jadi pastikan salah satu font tersebut tersedia di mesin server.
 - Translate Google gratis bisa rate-limit (sudah ada jeda + fallback).
 
 ---
@@ -227,6 +282,10 @@ app/
     health/route.ts           # GET /api/health
     translate-text/route.ts   # POST /api/translate-text
     process/route.ts          # POST /api/process (multipart FormData)
+    jobs/[jobId]/route.ts     # status/hapus job
+    jobs/[jobId]/editor/route.ts  # data editor mask manual
+    jobs/[jobId]/source/route.ts  # halaman asli untuk editor
+    jobs/[jobId]/mask/route.ts    # render ulang + mask manual
     outputs/[jobId]/[file]/route.ts  # GET file hasil (pengganti express.static)
 lib/
   ocr.ts            # sharp + tesseract.js
@@ -235,8 +294,10 @@ lib/
   bubble.ts         # YOLO bubble via Python sidecar (sekali per job, fallback aman)
   translate.ts      # auto (Google gratis → MyMemory), openrouter, opencode
   overlay.ts        # sharp composite SVG
+  jobFiles.ts       # pembuatan ZIP/PDF (awal & setelah koreksi mask)
+  renderStore.ts    # simpan halaman asli + metadata render per halaman
 components/
-  UploadForm.tsx  PageCard.tsx  Downloads.tsx  types.ts
+  UploadForm.tsx  PageCard.tsx  MaskEditor.tsx  Downloads.tsx  types.ts
 detector/       # sidecar Python YOLO (detect.py, requirements, README)
 outputs/        # hasil per job (git-ignored, dibuat otomatis)
 ```
