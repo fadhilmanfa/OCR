@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  ArrowLeftRight,
   CloudUpload,
   FileArchive,
   Info,
@@ -11,6 +12,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { ProcessingSettings } from "./useJobSession";
+import { APP_LANGS, LANG_LABEL, type AppLang } from "@/lib/languages";
+import type { CleanMode, ProcessMode } from "@/lib/cleanMode";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -127,12 +130,21 @@ export default function UploadForm({
   const removeTimers = useRef<number[]>([]);
   const [uploading, setUploading] = useState(false);
   const disabled = sessionBusy || uploading;
-  const { provider, bubble, ocrEngine, apiKey, googleApiKey } = settings;
+  const { provider, bubble, ocrEngine, apiKey, googleApiKey, sourceLang, targetLang, cleanMode, mode } = settings;
   const setProvider = (provider: string) => onSettingsChange({ ...settings, provider });
   const setBubble = (bubble: string) => onSettingsChange({ ...settings, bubble });
   const setOcrEngine = (ocrEngine: string) => onSettingsChange({ ...settings, ocrEngine });
+  const setCleanMode = (cleanMode: CleanMode) => onSettingsChange({ ...settings, cleanMode });
+  const setMode = (mode: ProcessMode) => onSettingsChange({ ...settings, mode });
+  const cleanOnly = mode === "clean";
+  const cleanBubbleInvalid = cleanOnly && (bubble === "0" || bubble === "google");
   const setApiKey = (apiKey: string) => onSettingsChange({ ...settings, apiKey });
   const setGoogleApiKey = (googleApiKey: string) => onSettingsChange({ ...settings, googleApiKey });
+  const setSourceLang = (sourceLang: AppLang) => onSettingsChange({ ...settings, sourceLang });
+  const setTargetLang = (targetLang: AppLang) => onSettingsChange({ ...settings, targetLang });
+  function swapLangs() {
+    onSettingsChange({ ...settings, sourceLang: targetLang, targetLang: sourceLang });
+  }
   const [showApiKey, setShowApiKey] = useState(false);
   const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
@@ -182,11 +194,27 @@ export default function UploadForm({
       });
       return;
     }
+    if (cleanBubbleInvalid) {
+      toast.error("Mode bersih butuh deteksi bubble", {
+        description: "Pilih Ogkalu atau Psimera — bukan Matikan/Google.",
+      });
+      return;
+    }
+    if (!cleanOnly && sourceLang === targetLang) {
+      toast.error("Bahasa sumber dan target sama", {
+        description: "Pilih pasangan bahasa yang berbeda.",
+      });
+      return;
+    }
     const form = new FormData();
     for (const file of files) form.append("files", file);
     form.append("provider", provider);
     form.append("bubble", bubble);
     form.append("ocrEngine", ocrEngine);
+    form.append("sourceLang", sourceLang);
+    form.append("targetLang", targetLang);
+    form.append("cleanMode", cleanMode);
+    form.append("mode", mode);
     if ((provider === "openrouter" || ocrEngine === "vision_llm") && apiKey.trim()) {
       form.append("apiKey", apiKey.trim());
     }
@@ -292,9 +320,95 @@ export default function UploadForm({
           <span className="block text-sm font-medium">Detail pemrosesan</span>
         </div>
         <div className="grid gap-4 md:grid-cols-3">
+          <div className="space-y-2">
+            <Label htmlFor="process-mode">Mode proses</Label>
+            <Select value={mode} onValueChange={(v) => setMode(v as ProcessMode)} disabled={disabled}>
+              <SelectTrigger id="process-mode" className="h-11 w-full">
+                <SelectValue placeholder="Pilih mode" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="translate">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span>Terjemahkan</span>
+                    <span className="select-item-desc text-muted-foreground text-xs font-normal">OCR → terjemah → timpa bubble → tempel teks.</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="clean">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <span>Bersihkan saja (cek timpa)</span>
+                    <span className="select-item-desc text-muted-foreground text-xs font-normal">Timpa seluruh bubble tanpa OCR/terjemahan.</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-muted-foreground self-end pb-3 text-xs leading-relaxed md:col-span-2">
+            {cleanOnly
+              ? "Hanya menimpa seluruh bubble, tanpa OCR dan terjemahan. Pakai ini untuk mengecek dulu apakah semua bubble tertutup rapi."
+              : "Semua bubble ditimpa dulu (termasuk yang teksnya tidak terbaca), baru terjemahan ditempel di atasnya."}
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-[1fr_auto_1fr]">
+          <div className="space-y-2">
+            <Label htmlFor="source-lang">Dari</Label>
+            <Select value={sourceLang} onValueChange={(v) => setSourceLang(v as AppLang)} disabled={disabled || cleanOnly}>
+              <SelectTrigger id="source-lang" className="h-11 w-full">
+                <SelectValue placeholder="Bahasa sumber" />
+              </SelectTrigger>
+              <SelectContent>
+                {APP_LANGS.map((l) => (
+                  <SelectItem key={l} value={l}>{LANG_LABEL[l]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-end justify-center pb-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-11 w-11"
+              onClick={swapLangs}
+              disabled={disabled || cleanOnly}
+              aria-label="Tukar bahasa sumber dan target"
+              title="Tukar bahasa"
+            >
+              <ArrowLeftRight className="size-4" />
+            </Button>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="target-lang">Ke</Label>
+            <Select value={targetLang} onValueChange={(v) => setTargetLang(v as AppLang)} disabled={disabled || cleanOnly}>
+              <SelectTrigger id="target-lang" className="h-11 w-full">
+                <SelectValue placeholder="Bahasa target" />
+              </SelectTrigger>
+              <SelectContent>
+                {APP_LANGS.map((l) => (
+                  <SelectItem key={l} value={l}>{LANG_LABEL[l]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        {cleanOnly ? (
+          <p className="text-muted-foreground text-xs">
+            Mode bersih tidak memakai bahasa, penerjemah, atau mesin OCR — semua bubble ditimpa lalu hasilnya bisa diunduh.
+          </p>
+        ) : sourceLang === targetLang ? (
+          <p className="text-xs text-destructive">Bahasa sumber dan target sama — pilih pasangan berbeda.</p>
+        ) : null}
+        {cleanBubbleInvalid && (
+          <p className="text-xs text-destructive">
+            Mode bersih butuh deteksi bubble Ogkalu/Psimera — ganti Deteksi bubble dulu.
+          </p>
+        )}
+        {sourceLang !== "en" && ocrEngine === "comics_text_plus" && (
+          <p className="text-muted-foreground text-xs">comics_text_plus hanya akurat untuk Inggris — otomatis fallback ke Tesseract untuk {LANG_LABEL[sourceLang]}.</p>
+        )}
+        <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <Label htmlFor="provider">Penerjemah</Label>
-                <Select value={provider} onValueChange={setProvider} disabled={disabled}>
+                <Select value={provider} onValueChange={setProvider} disabled={disabled || cleanOnly}>
                   <SelectTrigger id="provider" className="h-11 w-full">
                     <SelectValue placeholder="Pilih penerjemah" />
                   </SelectTrigger>
@@ -391,7 +505,7 @@ export default function UploadForm({
                     </TooltipContent>
                   </Tooltip>
                 </Label>
-                <Select value={ocrEngine} onValueChange={setOcrEngine} disabled={disabled}>
+                <Select value={ocrEngine} onValueChange={setOcrEngine} disabled={disabled || cleanOnly}>
                   <SelectTrigger id="ocr-engine" className="h-11 w-full">
                     <SelectValue placeholder="Pilih mesin OCR" />
                   </SelectTrigger>
@@ -424,9 +538,73 @@ export default function UploadForm({
                 </Select>
               </div>
             </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="space-y-2">
+            <Label htmlFor="clean-mode" className="flex items-center gap-1.5">
+              Bersih teks
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Info pembersih teks"
+                    className="text-muted-foreground hover:text-foreground cursor-help rounded-full"
+                  >
+                    <Info aria-hidden="true" className="size-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-60">
+                  Cara menutup teks asli sebelum teks terjemahan ditempel.
+                  Mode per baris hanya menimpa baris hasil OCR sehingga
+                  outline bubble tetap terlihat. Warna bubble mengambil warna
+                  kertas dari gambar, jadi panel gelap tidak berubah putih.
+                </TooltipContent>
+              </Tooltip>
+            </Label>
+            <Select value={cleanMode} onValueChange={(v) => setCleanMode(v as CleanMode)} disabled={disabled}>
+              <SelectTrigger id="clean-mode" className="h-11 w-full">
+                <SelectValue placeholder="Pilih mode pembersih" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="text">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <div className="flex items-center gap-3"><span>Per baris teks</span></div>
+                    <div className="select-item-desc text-muted-foreground text-xs font-normal">Hanya baris hasil OCR yang ditimpa; outline bubble tetap utuh.</div>
+                  </div>
+                </SelectItem>
+                <SelectItem value="bubble">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <div className="flex items-center gap-3"><span>Warna bubble</span></div>
+                    <div className="select-item-desc text-muted-foreground text-xs font-normal">Ikut warna kertas dari gambar, tanpa bercak putih.</div>
+                  </div>
+                </SelectItem>
+                <SelectItem value="white">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <div className="flex items-center gap-3"><span>Putih (lama)</span></div>
+                    <div className="select-item-desc text-muted-foreground text-xs font-normal">Mask putih solid, seperti versi sebelumnya.</div>
+                  </div>
+                </SelectItem>
+                <SelectItem value="none">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <div className="flex items-center gap-3"><span>Tanpa hapus</span></div>
+                    <div className="select-item-desc text-muted-foreground text-xs font-normal">Teks asli dibiarkan, untuk mengecek OCR.</div>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-muted-foreground self-end pb-3 text-xs leading-relaxed md:col-span-2">
+            {cleanMode === "text"
+              ? "OCR melacak posisi tiap baris teks, lalu hanya baris itu yang ditimpa. Outline bubble dan ilustrasi tidak ikut tertutup, jadi jauh lebih rapi daripada blok lingkaran. Pada mode Bersihkan saja (tanpa OCR) area kembali ditimpa per bubble."
+              : cleanMode === "bubble"
+                ? "Warna kertas diambil dari tiap area teks. Huruf terjemahan otomatis hitam di kertas terang, putih di panel gelap."
+                : cleanMode === "white"
+                ? "Cocok untuk halaman kertas putih. Di panel gelap atau ilustrasi berwarna, area teks bisa terlihat putih."
+                : "Teks asli tidak dihapus; terjemahan menimpanya. Berguna untuk memeriksa hasil OCR sebelum dibersihkan."}
+          </p>
+        </div>
       </section>
 
-      {(provider === "openrouter" || ocrEngine === "vision_llm") && (
+      {!cleanOnly && (provider === "openrouter" || ocrEngine === "vision_llm") && (
         <div className="space-y-2">
           <Label htmlFor="openrouter-api-key">API key OpenRouter</Label>
           <div className="flex gap-2">
@@ -455,7 +633,7 @@ export default function UploadForm({
           </div>
         </div>
       )}
-      {ocrEngine === "google_vision" && (
+      {!cleanOnly && ocrEngine === "google_vision" && (
         <div className="space-y-2">
           <Label htmlFor="google-api-key">API key Google Vision</Label>
           <div className="flex gap-2">
@@ -487,11 +665,16 @@ export default function UploadForm({
       <Button
         type="button"
         onClick={handleProcess}
-        disabled={disabled || files.length === 0}
+        disabled={
+          disabled ||
+          files.length === 0 ||
+          cleanBubbleInvalid ||
+          (!cleanOnly && sourceLang === targetLang)
+        }
         className="h-11 w-full"
       >
         {disabled && <Loader2 className="animate-spin" />}
-        {disabled ? "Memproses..." : "Proses komik"}
+        {disabled ? "Memproses..." : cleanOnly ? "Bersihkan bubble" : "Proses komik"}
       </Button>
     </section>
   );

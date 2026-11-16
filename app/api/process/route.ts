@@ -5,6 +5,13 @@ import crypto from "crypto";
 import { resolveOcrEngine } from "@/lib/ocrComicsPlus";
 import { googleVisionConfig } from "@/lib/ocrGoogleVision";
 import { openRouterConfig } from "@/lib/translate";
+import { normalizeAppLang } from "@/lib/languages";
+import {
+  normalizeCleanMode,
+  normalizeProcessMode,
+  type CleanMode,
+  type ProcessMode,
+} from "@/lib/cleanMode";
 import { collectImages, processCollectedImages } from "@/lib/processJob";
 import { completeJob, createJob, failJob } from "@/lib/jobs";
 
@@ -24,6 +31,11 @@ export async function POST(req: Request) {
   let provider = "auto";
   let bubbleParam = "1";
   let ocrEngine = resolveOcrEngine();
+  let sourceLangRaw: unknown = "en";
+  let targetLangRaw: unknown = "id";
+  // Default API lama = mask putih; UI mengirim cleanMode sendiri.
+  let cleanMode: CleanMode = "white";
+  let processMode: ProcessMode = "translate";
   try {
     const url = new URL(req.url);
     const qp = url.searchParams.get("provider");
@@ -32,6 +44,14 @@ export async function POST(req: Request) {
     if (qb) bubbleParam = qb;
     const qo = url.searchParams.get("ocrEngine");
     if (qo) ocrEngine = resolveOcrEngine(qo);
+    const qs = url.searchParams.get("sourceLang");
+    if (qs) sourceLangRaw = qs;
+    const qt = url.searchParams.get("targetLang");
+    if (qt) targetLangRaw = qt;
+    const qc = url.searchParams.get("cleanMode");
+    if (qc) cleanMode = normalizeCleanMode(qc);
+    const qm = url.searchParams.get("mode");
+    if (qm) processMode = normalizeProcessMode(qm);
   } catch {
     // abaikan, pakai default
   }
@@ -52,7 +72,30 @@ export async function POST(req: Request) {
     if (typeof ocrField === "string" && ocrField) {
       ocrEngine = resolveOcrEngine(ocrField);
     }
-    if ((provider === "openrouter" || ocrEngine === "vision_llm") && !apiKey) {
+    const sourceField = form.get("sourceLang");
+    if (typeof sourceField === "string" && sourceField) sourceLangRaw = sourceField;
+    const targetField = form.get("targetLang");
+    if (typeof targetField === "string" && targetField) targetLangRaw = targetField;
+    const cleanField = form.get("cleanMode");
+    if (typeof cleanField === "string" && cleanField) cleanMode = normalizeCleanMode(cleanField);
+    const modeField = form.get("mode");
+    if (typeof modeField === "string" && modeField) processMode = normalizeProcessMode(modeField);
+    const cleanOnly = processMode === "clean";
+    if (cleanOnly && (bubbleParam === "0" || bubbleParam === "google")) {
+      return NextResponse.json(
+        { error: "Mode 'Bersihkan saja' butuh deteksi bubble Ogkalu/Psimera (bukan Matikan/Google)." },
+        { status: 400 },
+      );
+    }
+    const sourceLang = normalizeAppLang(sourceLangRaw, "en");
+    const targetLang = normalizeAppLang(targetLangRaw, "id");
+    if (!cleanOnly && sourceLang === targetLang) {
+      return NextResponse.json(
+        { error: "Bahasa sumber dan target sama — pilih pasangan berbeda." },
+        { status: 400 },
+      );
+    }
+    if (!cleanOnly && (provider === "openrouter" || ocrEngine === "vision_llm") && !apiKey) {
       return NextResponse.json(
         { error: "Masukkan API key OpenRouter di UI atau atur OPENROUTER_API_KEY di .env." },
         { status: 400 },
@@ -64,7 +107,7 @@ export async function POST(req: Request) {
     const { apiKey: googleApiKey } = googleVisionConfig(
       typeof googleKeyField === "string" ? googleKeyField : undefined,
     );
-    if (ocrEngine === "google_vision" && !googleApiKey) {
+    if (!cleanOnly && ocrEngine === "google_vision" && !googleApiKey) {
       return NextResponse.json(
         { error: "Masukkan API key Google Vision di UI atau atur GOOGLE_VISION_API_KEY di .env." },
         { status: 400 },
@@ -107,11 +150,17 @@ export async function POST(req: Request) {
       ocrEngine,
       apiKey,
       googleApiKey,
+      sourceLangRaw: sourceLang,
+      targetLangRaw: targetLang,
+      cleanMode,
+      mode: processMode,
     });
 
     const job = completeJob(jobId, {
       jobId,
       provider,
+      sourceLang,
+      targetLang,
       pages,
       zipUrl: `/api/outputs/${jobId}/hasil.zip`,
       pdfUrl: `/api/outputs/${jobId}/hasil.pdf`,

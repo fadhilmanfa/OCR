@@ -9,6 +9,8 @@ export interface ProcessPage {
   url: string;
   via?: string;
   bubbleCount?: number;
+  /** Jumlah bubble yang tidak menghasilkan teks OCR (dibiarkan utuh). */
+  undetected?: number;
   boxes: PageBox[];
 }
 
@@ -16,6 +18,8 @@ export interface ProcessResult {
   expiresAt?: number;
   jobId: string;
   provider: string;
+  sourceLang: string;
+  targetLang: string;
   pages: ProcessPage[];
   zipUrl: string;
   pdfUrl: string;

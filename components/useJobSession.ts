@@ -2,6 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { JobProgress, ProcessResult } from "./types";
+import { normalizeAppLang, type AppLang } from "@/lib/languages";
+import {
+  normalizeCleanMode,
+  normalizeProcessMode,
+  type CleanMode,
+  type ProcessMode,
+} from "@/lib/cleanMode";
 
 export interface ProcessingSettings {
   provider: string;
@@ -9,18 +16,46 @@ export interface ProcessingSettings {
   ocrEngine: string;
   apiKey: string;
   googleApiKey: string;
+  sourceLang: AppLang;
+  targetLang: AppLang;
+  cleanMode: CleanMode;
+  /** "clean" = hanya timpa bubble (cek), "translate" = terjemahkan. */
+  mode: ProcessMode;
 }
 
 interface Session {
   jobId: string | null;
   settings: ProcessingSettings;
+  /** Versi skema sesi; lihat migrateCleanMode(). */
+  version?: number;
 }
 
 const STORAGE_KEY = "komik-ocr-session-v1";
+// v2: default "Bersih teks" berubah dari white -> text (mask per baris).
+const SESSION_VERSION = 2;
 const EMPTY_SESSION: Session = {
+  version: SESSION_VERSION,
   jobId: null,
-  settings: { provider: "auto", bubble: "ogkalu", ocrEngine: "tesseract", apiKey: "", googleApiKey: "" },
+  settings: {
+    provider: "auto",
+    bubble: "ogkalu",
+    ocrEngine: "tesseract",
+    apiKey: "",
+    googleApiKey: "",
+    sourceLang: "en",
+    targetLang: "id",
+    cleanMode: "text",
+    mode: "translate",
+  },
 };
+
+// Migrasi sesi lama: "white" adalah default versi sebelumnya, bukan pilihan
+// sadar pengguna. Sekali saja diubah ke "text" agar langsung dapat mask rapi.
+// Setelah tersimpan versi 2, pilihan "white" eksplisit dipertahankan.
+function migrateCleanMode(value: unknown, version: number): CleanMode {
+  if (version < SESSION_VERSION && value === "white") return "text";
+  return normalizeCleanMode(value);
+}
 
 function readSession(): Session {
   const raw = sessionStorage.getItem(STORAGE_KEY);
@@ -28,7 +63,9 @@ function readSession(): Session {
   try {
     const saved = JSON.parse(raw);
     const settings = saved?.settings;
+    const version = Number(saved?.version) || 1;
     return {
+      version: SESSION_VERSION,
       jobId: typeof saved?.jobId === "string" && /^[a-z0-9]+$/i.test(saved.jobId) ? saved.jobId : null,
       settings: {
         provider: ["auto", "openrouter", "opencode"].includes(settings?.provider) ? settings.provider : "auto",
@@ -36,6 +73,10 @@ function readSession(): Session {
         ocrEngine: ["tesseract", "comics_text_plus", "vision_llm", "google_vision"].includes(settings?.ocrEngine) ? settings.ocrEngine : "tesseract",
         apiKey: typeof settings?.apiKey === "string" ? settings.apiKey : "",
         googleApiKey: typeof settings?.googleApiKey === "string" ? settings.googleApiKey : "",
+        sourceLang: normalizeAppLang(settings?.sourceLang, "en"),
+        targetLang: normalizeAppLang(settings?.targetLang, "id"),
+        cleanMode: migrateCleanMode(settings?.cleanMode, version),
+        mode: normalizeProcessMode(settings?.mode),
       },
     };
   } catch {
@@ -72,9 +113,10 @@ export function useJobSession() {
   }, []);
 
   const saveSession = useCallback((next: Session) => {
-    setSession(next);
+    const toSave = { ...next, version: SESSION_VERSION };
+    setSession(toSave);
     try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
     } catch {
       setStorageUnavailable(true);
     }
