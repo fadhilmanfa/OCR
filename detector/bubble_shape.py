@@ -68,6 +68,12 @@ def parse_args():
     p.add_argument("--images", nargs="+", required=True, help="path crop bubble")
     p.add_argument("--seeds", nargs="*", help="titik pusat region lokal per crop: x,y")
     p.add_argument(
+        "--edges",
+        nargs="*",
+        help="sisi crop yang merupakan batas gambar asli, format 'ltrb' (1/0) per crop. "
+        "Kontur boleh menyentuh sisi ini; sisi crop lain tetap ditolak.",
+    )
+    p.add_argument(
         "--epsilon",
         type=float,
         default=float(os.environ.get("BUBBLE_SHAPE_EPSILON", "0.01")),
@@ -194,7 +200,7 @@ def classify_kind(solidity, defect_count, rectangularity,
 def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
                 smooth_thr=SOLIDITY_SMOOTH, free_thr=SOLIDITY_FREE,
                 defect_frac=DEFECT_FRAC, defect_min=DEFECT_MIN_COUNT,
-                seed=None):
+                seed=None, edges=(False, False, False, False)):
     import numpy as _np  # noqa: F401 (alias konsisten)
 
     basename = os.path.basename(img_path)
@@ -231,10 +237,27 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
     sx = max(0, min(w - 1, int(round(center[0]))))
     sy = max(0, min(h - 1, int(round(center[1]))))
     radius = max(7, min(15, min(w, h) // 12))
-    seed_tone = float(_np.median(
-        gray[max(0, sy - radius):min(h, sy + radius + 1),
-             max(0, sx - radius):min(w, sx + radius + 1)]
-    ))
+    window = gray[max(0, sy - radius):min(h, sy + radius + 1),
+                  max(0, sx - radius):min(w, sx + radius + 1)]
+    # Seed harus warna KERTAS, bukan warna huruf. Tengah bubble YOLO sering
+    # tepat di atas teks: median menjadi gelap (huruf) sehingga kontur panel
+    # yang warnanya sedang justru menang atas bubble putih (dulu match pakai
+    # median → panel terpilih / fallback → lingkaran putih offside).
+    # Perbaikan: bila area terang, pakai persentil terang sebagai kertas;
+    # bila area gelap (bubble hitam), pakai persentil gelap sebagai kertas.
+    try:
+        flat = _np.asarray(window).reshape(-1).astype(float)
+        flat = flat[_np.isfinite(flat)]
+        if flat.size:
+            med0 = float(_np.median(flat))
+            if med0 > 128:
+                seed_tone = float(_np.percentile(flat, 85))
+            else:
+                seed_tone = float(_np.percentile(flat, 15))
+        else:
+            seed_tone = float(_np.median(window))
+    except Exception:
+        seed_tone = float(_np.median(window))
     # Bubble harus memuat titik tengah region deteksi dan seluruh outline
     # harus tertutup di dalam crop. Kontur yang menyentuh batas crop sering
     # merupakan latar/panel yang menyatu dengan putih bubble; memilihnya
@@ -249,7 +272,16 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
                 if cand_area / crop_area < min_area_ratio:
                     continue
                 x, y, bw, bh = cv2.boundingRect(cand)
-                if x <= 1 or y <= 1 or x + bw >= w - 1 or y + bh >= h - 1:
+                # Kontur yang menyentuh tepi crop biasanya latar/panel, tapi
+                # bubble yang terpotong tepi GAMBAR asli memang sah menyentuh
+                # tepi crop. Sisi yang merupakan batas gambar (edges) boleh.
+                touches_blocked = (
+                    (x <= 1 and not edges[0])
+                    or (y <= 1 and not edges[1])
+                    or (x + bw >= w - 1 and not edges[2])
+                    or (y + bh >= h - 1 and not edges[3])
+                )
+                if touches_blocked:
                     continue
                 if cv2.pointPolygonTest(cand, center, False) < 0:
                     continue
@@ -261,6 +293,55 @@ def extract_one(cv2, np, img_path, epsilon, min_area_ratio,
                 # di sekitar titik teks; warna panel berbeda.
                 match = -round(abs(interior_tone - seed_tone) / 12.0)
                 valid.append((match, cand_area, cand))
+
+    # Strategi tambahan: flood-fill area kertas dari titik seed. Threshold
+    # Otsu sering gagal untuk bubble abu-abu/berwarna di atas panel yang
+    # warnanya mirip; flood-fill berhenti di outline gelap sehingga area
+    # kertas tetap utuh.
+    try:
+        tol = 16
+        near = (sx, sy)
+        best_diff = 1e9
+        for yy in range(max(0, sy - 10), min(h, sy + 11)):
+            for xx in range(max(0, sx - 10), min(w, sx + 11)):
+                d = abs(float(gray[yy, xx]) - seed_tone)
+                if d < best_diff:
+                    best_diff = d
+                    near = (xx, yy)
+        flood = _np.zeros((h + 2, w + 2), dtype=_np.uint8)
+        cv2.floodFill(
+            gray.copy(), flood, near, 255,
+            loDiff=(tol,), upDiff=(tol,),
+            flags=4 | cv2.FLOODFILL_MASK_ONLY | (255 << 8) | cv2.FLOODFILL_FIXED_RANGE,
+        )
+        region = (flood[1:-1, 1:-1] > 0).astype(_np.uint8) * 255
+        fk = max(3, min(21, int(min(w, h) * 0.05) | 1))
+        region = cv2.morphologyEx(
+            region, cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (fk, fk)),
+        )
+        for cand in contours_of(region):
+            cand_area = float(cv2.contourArea(cand))
+            if cand_area / crop_area < min_area_ratio:
+                continue
+            x, y, bw, bh = cv2.boundingRect(cand)
+            if (
+                (x <= 1 and not edges[0])
+                or (y <= 1 and not edges[1])
+                or (x + bw >= w - 1 and not edges[2])
+                or (y + bh >= h - 1 and not edges[3])
+            ):
+                continue
+            if cv2.pointPolygonTest(cand, center, False) < 0:
+                continue
+            mask = _np.zeros((h, w), dtype=_np.uint8)
+            cv2.drawContours(mask, [cand], -1, 255, thickness=-1)
+            interior_tone = float(_np.median(gray[mask > 0]))
+            match = -round(abs(interior_tone - seed_tone) / 12.0)
+            valid.append((match, cand_area, cand))
+    except Exception:
+        pass
+
     best = None
     area = 0.0
     if valid:
@@ -330,6 +411,8 @@ def main():
     args = parse_args()
     if args.seeds is not None and len(args.seeds) != len(args.images):
         return fail(2, error="seed_count_mismatch")
+    if args.edges is not None and len(args.edges) != len(args.images):
+        return fail(2, error="edge_count_mismatch")
     try:
         import cv2
         import numpy as np
@@ -347,10 +430,14 @@ def main():
             if args.seeds is not None:
                 sx, sy = args.seeds[i].split(",", 1)
                 seed = (float(sx), float(sy))
+            edges = (False, False, False, False)
+            if args.edges is not None:
+                flag = str(args.edges[i]).ljust(4, "0")
+                edges = tuple(c == "1" for c in flag[:4])
             out.append(extract_one(cv2, np, img_path, args.epsilon,
                                    args.min_area_ratio, args.solidity,
                                    args.solidity_free, args.defect_frac,
-                                   args.defect_min, seed))
+                                   args.defect_min, seed, edges))
         except Exception as e:  # 1 crop gagal != job gagal
             base = os.path.basename(img_path)
             row = empty_row(base, 0, 0, "exception")

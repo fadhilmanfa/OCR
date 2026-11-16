@@ -74,6 +74,7 @@ function extractJson(stdout: string): unknown {
 async function runShapeExtractor(
   files: string[],
   seeds: Array<{ x: number; y: number }>,
+  edges: string[],
   source: "yolo" | "google",
   timeoutMs: number,
 ): Promise<unknown> {
@@ -81,6 +82,7 @@ async function runShapeExtractor(
   const minArea = Number(process.env.BUBBLE_SHAPE_MIN_AREA);
   const args = [SCRIPT, "--images", ...files];
   args.push("--seeds", ...seeds.map((s) => `${s.x},${s.y}`));
+  args.push("--edges", ...edges);
   if (Number.isFinite(epsilon) && epsilon > 0) args.push("--epsilon", String(epsilon));
   if (Number.isFinite(minArea) && minArea > 0) args.push("--min-area-ratio", String(minArea));
   else if (source === "google") args.push("--min-area-ratio", "0.08");
@@ -151,6 +153,29 @@ function toShape(row: unknown, left: number, top: number, W: number, H: number):
   }
 }
 
+function polygonArea(points: BubblePoint[]): number {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const q = points[(i + 1) % points.length];
+    sum += p.x * q.y - q.x * p.y;
+  }
+  return Math.abs(sum) / 2;
+}
+
+// Kontur kadang justru mengikuti baris teks (bukan outline bubble), misalnya
+// pada bubble yang terpotong tepi halaman. Kontur seperti itu kecil/berongga:
+// kalau span atau luasnya jauh di bawah region, lebih aman fallback ke
+// kotak/elips daripada menimpa hanya sebagian teks.
+function coversRegion(shape: BubbleShape, region: BBox): boolean {
+  const rw = Math.max(1, region.x1 - region.x0);
+  const rh = Math.max(1, region.y1 - region.y0);
+  const sw = shape.bbox.x1 - shape.bbox.x0;
+  const sh = shape.bbox.y1 - shape.bbox.y0;
+  if (sw < rw * 0.55 || sh < rh * 0.55) return false;
+  return polygonArea(shape.points) >= rw * rh * 0.4;
+}
+
 // regions: bbox area bubble (YOLO) atau teks (Google) dalam koordinat
 // gambar `pageBuffer`. Return sejajar dengan input (null = fallback).
 export async function extractBubbleShapes(
@@ -176,6 +201,9 @@ export async function extractBubbleShapes(
     const files: string[] = [];
     const origins: Array<{ left: number; top: number }> = [];
     const seeds: Array<{ x: number; y: number }> = [];
+    // Sisi crop yang berimpit dengan tepi gambar asli: kontur boleh
+    // menyentuhnya (bubble terpotong tepi halaman).
+    const edges: string[] = [];
     for (let i = 0; i < regions.length; i++) {
       const b = regions[i];
       // Google memberi kotak TEKS, bukan kotak bubble. Perlu ruang jauh
@@ -194,8 +222,12 @@ export async function extractBubbleShapes(
         files.push("");
         origins.push({ left, top });
         seeds.push({ x: 0, y: 0 });
+        edges.push("0000");
         continue;
       }
+      edges.push(
+        `${left <= 0 ? 1 : 0}${top <= 0 ? 1 : 0}${right >= W ? 1 : 0}${bottom >= H ? 1 : 0}`,
+      );
       // Crop MENTAH (tanpa upscale/grayscale) agar outline asli terjaga.
       const buf = await sharp(pageBuffer)
         .extract({ left, top, width: w, height: h })
@@ -213,6 +245,7 @@ export async function extractBubbleShapes(
     const parsed = await runShapeExtractor(
       validIdx.map((i) => files[i]),
       validIdx.map((i) => seeds[i]),
+      validIdx.map((i) => edges[i]),
       source,
       timeoutMs,
     );
@@ -232,7 +265,8 @@ export async function extractBubbleShapes(
     const out: BubbleShapeResult[] = regions.map(() => null);
     parsed.forEach((row, k) => {
       const i = validIdx[k];
-      out[i] = toShape(row, origins[i].left, origins[i].top, W, H);
+      const shape = toShape(row, origins[i].left, origins[i].top, W, H);
+      out[i] = shape && coversRegion(shape, regions[i]) ? shape : null;
     });
     return out;
   } catch (e) {
