@@ -17,9 +17,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "OCR EN → ID",
+  title: "Komik OCR — EN / JA / ID / ZH",
   description:
-    "Upload JPG/PNG/ZIP → OCR Inggris → auto-translate Indonesia → timpa teks ID.",
+    "Upload JPG/PNG/ZIP → OCR Inggris/Jepang/Indonesia/Mandarin → translate → timpa teks terjemahan.",
 };
 
 export default function RootLayout({

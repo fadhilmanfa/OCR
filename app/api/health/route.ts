@@ -17,6 +17,6 @@ export async function GET() {
       model: oc.model || "(default model opencode)",
       auth: oc.password ? "password terpasang" : "tanpa password",
     },
-    note: "provider=auto memakai Google gratis + fallback MyMemory (kaku). provider=openrouter memakai LLM OpenRouter (natural, butuh API key).",
+    note: "provider=auto memakai Google gratis + fallback MyMemory (kaku). provider=openrouter memakai LLM OpenRouter (natural, butuh API key). Bahasa: en/ja/id via sourceLang/targetLang.",
   });
 }
