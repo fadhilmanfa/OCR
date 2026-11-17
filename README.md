@@ -73,45 +73,7 @@ di dalam area deteksi. Teks terjemahan ditempatkan pada ruang aman di
 dalam kontur. Jika kontur tidak terbaca, jalur YOLO memakai elips;
 pilihan bubble Google memakai kotak teks kecil sebagai cadangan.
 
-### 1.4 Opsional — Engine OCR comics_text_plus
-
-Engine alternatif FCENet (deteksi) + MASTER (rekognisi) untuk huruf komik
-yang gagal dibaca Tesseract. Dipilih via dropdown "OCR engine" di form.
-Kalau gagal (venv/checkpoint belum ada), otomatis fallback ke Tesseract.
-
-Berbeda dengan model bubble, engine ini **tidak bisa one-click install**:
-butuh venv Python 3.9 terpisah (comics-ocr pin `torch==1.9` yang tidak
-kompatibel dengan Python 3.12 / torch modern milik YOLO — jangan dicampur
-satu env).
-
-Langkah (Windows, sekali saja):
-
-```bat
-py -3.9 -m venv C:\venvs\comics
-C:\venvs\comics\Scripts\activate
-pip install torch==1.9.0+cpu torchvision==0.10.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
-pip install comics-ocr Pillow
-```
-
-> Daftar versi yang terbukti jalan ada di
-> `detector/requirements-comics-py39.txt` (hasil `pip freeze`, bukan file
-> install — baca header-nya dulu karena ada pin yang harus dipasang manual).
-
-Download checkpoint dari folder Google Drive di README repo
-`github.com/gsoykan/comics_text_plus`, taruh di
-`detector/models/comics_text_plus/` dengan nama file fine-tune aslinya.
-Kalau Drive-nya terkunci, pakai bobot dasar publik (`*_base-*.pth`) +
-arahkan 2 env ini ke file tersebut. Lalu isi `.env`:
-
-```bat
-COMICS_PYTHON=C:\venvs\comics\Scripts\python.exe
-COMICS_DET_CKPT=detector/models/comics_text_plus/fcenet_r50dcnv2_fpn_1500e_ctw1500_base-e326d7ec.pth
-COMICS_RECOG_CKPT=detector/models/comics_text_plus/master_r31_12e_ST_MJ_SA_base-787edd36.pth
-```
-
-Semua file di `detector/models/` git-ignored — tiap mesin download sendiri.
-
-### 1.5 Opsional — Server OpenCode lokal (legacy)
+### 1.4 Opsional — Server OpenCode lokal (legacy)
 
 Hanya bila memakai provider `opencode`:
 
@@ -178,13 +140,36 @@ Cek kesehatan + status key: http://localhost:3000/api/health
    mengembalikan semua mask otomatis ke posisi/ukuran awal.
    Tab **Teks** menampilkan workspace tipografi: halaman tanpa teks + tiap
    terjemahan sebagai kotak yang bisa digeser dan diubah ukurannya (tarik
-   handle). Pilih kotak lalu ubah **Isi teks** di ribbon (atau ganti font,
-   bold, skala); teks di dalam kotak langsung mengikuti, otomatis wrap dan
-   menyesuaikan ukuran. **Hapus** / `Delete` menghilangkan teks terjemahan
-   (area tetap dibersihkan); teks yang dihapus ditandai merah dan bisa
-   diaktifkan lagi. **Cakupan** menentukan font hanya untuk halaman ini atau
-   semua halaman. **Pulihkan** mengembalikan semua kotak teks ke posisi/isi
-   awal dan menampilkan lagi teks yang dihapus.
+   handle). Double-click kotak untuk **edit teks langsung** di dalamnya
+   (Enter = baris baru, Esc/klik luar = simpan); toolbar mini mengambang di
+   atas kotak mengatur font family, Normal/Bold, dan ukuran font khusus kotak
+   itu (tombol reset = ikut halaman). Menarik handle **sisi** (atas/bawah/
+   kiri/kanan) hanya mengubah kotak — font tidak membesar; menarik **pojok**
+   men-skala font. Teks selalu di-auto-fit (mengecil bila perlu) dan dirender
+   dengan clip ke kotak, jadi tidak meluber ke bagian lain halaman. Pilih
+   kotak lalu ubah **Isi teks** di ribbon (atau ganti font, bold, skala); teks
+   di dalam kotak langsung mengikuti. **Hapus** / `Delete` menghilangkan teks
+   terjemahan (area tetap dibersihkan); teks yang dihapus ditandai merah dan
+   bisa diaktifkan lagi. **Cakupan** menentukan font halaman hanya untuk
+   halaman ini atau semua halaman. **Pulihkan** mengembalikan semua kotak teks
+   ke posisi/isi/skala/font awal dan menampilkan lagi teks yang dihapus.
+   Tab **Pindai** menyediakan tiga aksi: **Mask ulang** (deteksi ulang area
+   mask), **Terjemah** (terjemahkan ulang teks sumber yang tersimpan), dan
+   **OCR + Terjemah** (baca ulang gambar asli lalu terjemahkan). Setiap aksi
+   membuat kandidat dulu: panel kanan menampilkan gambar pembanding
+   Sebelum/Sesudah dan daftar perubahan teks/mask dengan checkbox per item.
+   **Terapkan** menyimpan pilihan (item tidak dicentang mempertahankan hasil
+   lama); **Batal** membuang kandidat tanpa mengubah halaman. Pindai ulang
+   memakai setelan default job (bisa diubah di panel) dan API key dari form
+   sesi; hasilnya juga memperbarui ZIP/PDF selama job belum kedaluwarsa.
+   Tombol **Lingkari area** (circle to search) di bawah **Buat pembanding**
+   mengaktifkan lasso: tarik bebas di kanvas untuk membatasi rescan ke area
+   itu. Bubble yang tersentuh diikutkan utuh; teks/SFX di luar bubble dibaca
+   dari crop area. Tanpa lasso, rescan memakai seluruh halaman. Area direset
+   setelah Terapkan/Batal. Draf teks/mask yang belum diterapkan **tidak**
+   dipakai sebagai acuan: rescan selalu memakai hasil tersimpan terakhir, dan
+   Terapkan hasil pindai akan membuang draf halaman tersebut (Batal tetap
+   mempertahankan draf).
    **Undo/Redo** (Ctrl+Z / Ctrl+Shift+Z) mencakup goresan, edit mask, dan
    posisi kotak teks. Ukuran brush (`[` / `]`), latar **Hasil / Asli**, tombol
    layar penuh, serta **Ctrl+scroll** untuk zoom, scroll untuk geser,
@@ -196,10 +181,10 @@ Cek kesehatan + status key: http://localhost:3000/api/health
 
 ### Sesi dan masa simpan hasil
 
-Hasil disimpan selama **10 menit sejak pemrosesan selesai**, lalu folder job
+Hasil disimpan selama **30 menit sejak pemrosesan selesai**, lalu folder job
 beserta PNG, ZIP, PDF, dan metadata dihapus otomatis. Refresh, polling, dan
 unduhan tidak memperpanjang batas waktu. File parsial job gagal dibersihkan
-10 menit sejak kegagalan. Hitung mundur ditampilkan di halaman hasil.
+30 menit sejak kegagalan. Hitung mundur ditampilkan di halaman hasil.
 
 Sesi tab menyimpan ID job terakhir, pilihan pemrosesan, dan API key. Refresh
 melanjutkan pemantauan job yang sudah diterima server atau menampilkan hasil
@@ -208,7 +193,7 @@ Tombol **Proses baru** mempertahankan pengaturan dan key. Sesi tidak dijanjikan
 lintas perangkat atau setelah tab ditutup.
 
 Koreksi mask disimpan di server bersama hasil (gambar asli + metadata render)
-selama hasil belum kedaluwarsa. Koreksi **tidak memperpanjang** batas 10 menit;
+selama hasil belum kedaluwarsa. Koreksi **tidak memperpanjang** batas 30 menit;
 setelah itu halaman asli ikut terhapus dan editor tidak bisa dipakai lagi.
 
 Preferensi editor (layar penuh, alat, ukuran brush, tab aktif) dan draf
@@ -236,12 +221,11 @@ mengembalikan `410` sebelum cleanup atau `404` setelah dihapus.
 - Bubble: download kedua model (`python detector/download_model.py` tanpa `--only`):
   `ogkalu ~52MB` untuk barat, `psimera ~23MB` untuk manga.
 - OCR:
-  - Sumber Inggris: `comics_text_plus` (venv Python 3.9 + checkpoint, lihat 1.4) paling akurat untuk huruf komik; fallback otomatis ke Tesseract.
+  - Sumber Inggris: `tesseract` bawaan cukup untuk huruf komik standar; `vision_llm`/`google_vision` untuk huruf stilasi berat.
   - Sumber Jepang: `vision_llm` (butuh `OPENROUTER_API_KEY`) atau `google_vision` (butuh `GOOGLE_VISION_API_KEY`) — jauh lebih akurat dari Tesseract untuk kana/kanji, teks vertikal, dan huruf stilasi. Tesseract `jpn` lokal tetap didukung sebagai fallback offline (data diunduh otomatis oleh tesseract.js).
   - Sumber Mandarin: `vision_llm` atau `google_vision` sangat disarankan karena Tesseract `chi_sim` lebih lemah untuk hanzi bergaya komik. Fallback lokal memakai `chi_sim` (diunduh otomatis oleh tesseract.js, ±20MB) dan hanya mendukung Mandarin Sederhana.
   - Sumber Indonesia: `tesseract` bawaan cukup.
 - Translate natural: `openrouter` (butuh key). Rekomendasi model: umum `google/gemini-2.5-flash`, kualitas JP tinggi `google/gemini-2.5-pro` / `anthropic/claude-3.5-sonnet`, konten dewasa `z-ai/glm-5.3-flash`. `auto` (Google gratis + MyMemory) tetap ada tapi kaku/literal dan rawan rate-limit.
-- `comics_text_plus` hanya latin — untuk sumber Jepang/Indonesia/Mandarin otomatis fallback ke Tesseract (tercatat di `via`).
 
 API key OpenRouter wajib tersedia lewat UI atau env jika fiturnya dipakai.
 Pengaturan lainnya memiliki default di kode.
@@ -257,7 +241,6 @@ Pengaturan lainnya memiliki default di kode.
 | `BUBBLE_CONF` / `BUBBLE_IMGSZ` / `BUBBLE_MAX` | Tidak | `0.3` / `1024` / `40` | Tuning YOLO |
 | `OCR_ENGINE` | Tidak | `tesseract` | Default server-side; pilihan form per-request selalu menang |
 | `OPENCODE_URL` dkk | Ya, kalau provider `opencode` | `http://127.0.0.1:4096` | Butuh `opencode serve` jalan (legacy) |
-| `COMICS_*` | Ya, kalau engine `comics_text_plus` | lihat `.env.example` | Butuh venv Python 3.9 + checkpoint (lihat 1.4) |
 
 Prioritas nilai per-request: **form → query URL (`?provider=&bubble=&ocrEngine=`) → env → default kode**.
 
@@ -325,10 +308,13 @@ app/
     jobs/[jobId]/source/route.ts  # halaman asli untuk editor
     jobs/[jobId]/textbase/route.ts # halaman dasar workspace teks (tanpa teks)
     jobs/[jobId]/mask/route.ts    # render ulang + mask/font/kotak teks
+    jobs/[jobId]/rescan/route.ts  # kandidat pindai ulang (POST/DELETE)
+    jobs/[jobId]/rescan/apply/route.ts    # terapkan pilihan pembanding
+    jobs/[jobId]/rescan/preview/route.ts  # gambar kandidat Sebelum/Sesudah
     outputs/[jobId]/[file]/route.ts  # GET file hasil (pengganti express.static)
 lib/
   ocr.ts            # sharp + tesseract.js
-  ocrComicsPlus.ts  # engine alternatif FCENet+MASTER via Python (opsional)
+  ocrEngine.ts      # tipe & resolver pilihan engine OCR
   ocrVisionLLM.ts   # engine alternatif Vision LLM via OpenRouter (opsional)
   bubble.ts         # YOLO bubble via Python sidecar (sekali per job, fallback aman)
   translate.ts      # auto (Google gratis → MyMemory), openrouter, opencode
@@ -336,6 +322,7 @@ lib/
   fonts.ts          # daftar font terjemahan (dipakai client & server)
   textLayout.ts     # wrap & auto-fit teks (dipakai client & server)
   renderPage.ts     # render ulang satu halaman (dipakai mask & textbase)
+  rescan.ts         # kandidat pindai ulang + diff + apply per item
   jobFiles.ts       # pembuatan ZIP/PDF (awal & setelah koreksi mask)
   renderStore.ts    # simpan halaman asli + metadata render per halaman
 components/
