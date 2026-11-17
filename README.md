@@ -162,11 +162,37 @@ Cek kesehatan + status key: http://localhost:3000/api/health
    `white`; UI memakai `text`. Mode `clean` hanya sah dengan deteksi bubble
    Ogkalu/Psimera dan otomatis memakai mask bubble penuh karena tidak ada OCR.
 6. Klik Proses → tunggu (OCR 10–60 detik/halaman) → preview Before/After → Download ZIP/PDF.
-7. Bila ada teks yang terlewat, klik **Koreksi mask** di halaman hasil:
-   tarik untuk membuat kotak, geser untuk memindah, tarik handle untuk
-   mengubah ukuran. Latar bisa diganti **Hasil / Asli**. **Terapkan**
-   merender ulang halaman dari gambar asli (terjemahan tetap aman) dan
-   memperbarui ZIP/PDF. Mask manual disimpan selama sesi hasil masih ada.
+7. Bila ada teks yang terlewat, klik **Koreksi mask** di halaman hasil.
+   Editor memakai ribbon dua tab: **Mask** (Alat, Ukuran, Mask otomatis,
+   Riwayat, Latar, Zoom) dan **Teks** (font, gaya, ukuran, cakupan, tampilan,
+   posisi teks).
+   **Brush** menimpa area yang terlewat, **Eraser** mengoreksi goresan
+   (urutan paint → erase → paint dipertahankan), dan alat **Mask** mengatur
+   mask otomatis (garis kuning): klik kotak lalu geser untuk pindah, tarik
+   handle untuk ubah ukuran, atau **Hapus** / `Delete`. Semua perubahan
+   langsung tampil di foto memakai warna kertas (preview lokal, tanpa render
+   server). Preview memakai gambar dasar tanpa teks, lalu teks terjemahan
+   digambar ulang di atas sapuan brush — jadi menimpa bubble tidak
+   menghilangkan terjemahannya. Mask yang dihapus tetap ditandai merah (silang)
+   dan bisa diaktifkan lagi dengan mengklik kotaknya. **Pulihkan**
+   mengembalikan semua mask otomatis ke posisi/ukuran awal.
+   Tab **Teks** menampilkan workspace tipografi: halaman tanpa teks + tiap
+   terjemahan sebagai kotak yang bisa digeser dan diubah ukurannya (tarik
+   handle). Pilih kotak lalu ubah **Isi teks** di ribbon (atau ganti font,
+   bold, skala); teks di dalam kotak langsung mengikuti, otomatis wrap dan
+   menyesuaikan ukuran. **Hapus** / `Delete` menghilangkan teks terjemahan
+   (area tetap dibersihkan); teks yang dihapus ditandai merah dan bisa
+   diaktifkan lagi. **Cakupan** menentukan font hanya untuk halaman ini atau
+   semua halaman. **Pulihkan** mengembalikan semua kotak teks ke posisi/isi
+   awal dan menampilkan lagi teks yang dihapus.
+   **Undo/Redo** (Ctrl+Z / Ctrl+Shift+Z) mencakup goresan, edit mask, dan
+   posisi kotak teks. Ukuran brush (`[` / `]`), latar **Hasil / Asli**, tombol
+   layar penuh, serta **Ctrl+scroll** untuk zoom, scroll untuk geser,
+   **Shift+scroll** untuk geser kanan/kiri, Space+drag / tombol tengah untuk
+   pan, dan pinch dua jari di layar sentuh. **Terapkan** tetap diperlukan untuk
+   menyimpan: server merender ulang halaman dari gambar asli (terjemahan tetap
+   aman) lalu memperbarui ZIP/PDF. Mask manual dan pengaturan teks disimpan
+   selama sesi hasil masih ada.
 
 ### Sesi dan masa simpan hasil
 
@@ -184,6 +210,14 @@ lintas perangkat atau setelah tab ditutup.
 Koreksi mask disimpan di server bersama hasil (gambar asli + metadata render)
 selama hasil belum kedaluwarsa. Koreksi **tidak memperpanjang** batas 10 menit;
 setelah itu halaman asli ikut terhapus dan editor tidak bisa dipakai lagi.
+
+Preferensi editor (layar penuh, alat, ukuran brush, tab aktif) dan draf
+koreksi (goresan + edit mask otomatis + posisi kotak teks) disimpan di
+`localStorage` browser, jadi membuka **Koreksi mask** lagi memakai setelan
+terakhir dan koreksi yang belum diterapkan tidak hilang. Font dan ukuran/posisi
+kotak teks sendiri disimpan di server per job (bukan di localStorage). Draf
+dibuang otomatis setelah **Terapkan** berhasil atau saat halaman hasil sudah
+kedaluwarsa (editor tidak bisa dimuat lagi).
 
 Cleanup berjalan pada satu server Node.js yang terus hidup, termasuk tanpa
 halaman browser terbuka. Jika server mati, cleanup dilanjutkan saat startup:
@@ -235,9 +269,10 @@ Prioritas nilai per-request: **form → query URL (`?provider=&bubble=&ocrEngine
 | POST | `/api/translate-text` | body `{ texts: string[], provider? }` |
 | POST | `/api/process?provider=auto&bubble=1&ocrEngine=tesseract&cleanMode=text&mode=translate` | multipart `files` (+ field `provider`/`bubble`/`ocrEngine`/`cleanMode`/`mode` opsional, menang atas env) |
 | GET | `/api/outputs/<jobId>/<file>` | file hasil (png/zip/pdf) |
-| GET | `/api/jobs/<jobId>/editor?file=<file>` | data editor mask manual: ukuran, mask otomatis/manual, URL asli & hasil |
+| GET | `/api/jobs/<jobId>/editor?file=<file>` | data editor: ukuran, mask, goresan, font, kotak teks, URL asli/hasil/pratinjau teks |
 | GET | `/api/jobs/<jobId>/source?file=<file>` | halaman asli (sebelum ditimpa) untuk background editor |
-| POST | `/api/jobs/<jobId>/mask` | body `{ file, rects: [{x0,y0,x1,y1}] }`; render ulang dari halaman asli lalu perbarui ZIP/PDF |
+| GET | `/api/jobs/<jobId>/textbase?file=<file>` | halaman dasar workspace teks (mask + goresan, tanpa teks terjemahan) |
+| POST | `/api/jobs/<jobId>/mask` | body `{ file, strokes, autoMaskEdits?, textOverrides?: [{ index, x, y, w, h }], font?: { family, bold, scale }, fontScope?: "page" \| "all" }`; render ulang dari halaman asli lalu perbarui ZIP/PDF (`fontScope: all` merender semua halaman) |
 
 Respons `pages[]` memuat `via` (`yolo-ogkalu` / `yolo-psimera` /
 `ocr-full`), `bubbleCount`, `undetected` (bubble tanpa teks OCR), dan `boxes`.
@@ -260,14 +295,17 @@ Respons `pages[]` memuat `via` (`yolo-ogkalu` / `yolo-psimera` /
   mask kembali per kotak teks. Ilustrasi/tekstur yang menyatu dengan teks masih
   perlu diperiksa pada preview hasil.
 - Bubble yang teksnya tidak terdeteksi **dibiarkan utuh** dan ditandai di UI.
-  Gunakan **Koreksi mask** untuk menandai manual; koreksi hanya menimpa area
-  (tidak menambah teks terjemahan). Halaman asli untuk render ulang disimpan
-  di folder job dan ikut terhapus saat TTL habis; koreksi tidak memperpanjang TTL.
+  Gunakan **Koreksi mask** (brush/eraser, atau atur mask otomatis kuning) untuk
+  menimpa manual; koreksi hanya menimpa area (tidak menambah teks terjemahan).
+  Halaman asli untuk render ulang disimpan di folder job dan ikut terhapus saat
+  TTL habis; koreksi tidak memperpanjang TTL.
 - OCR = Tesseract.js. Kandidat bentuk/confidence buruk dilewati. Huruf stilasi / SFX
   masih bisa terlewat — cek preview. Mandarin Sederhana memakai `chi_sim`;
   untuk akurasi hanzi yang lebih baik pilih `vision_llm`/`google_vision`.
-- Overlay memakai font CJK sistem (PingFang/Noto/YaHei) sebagai fallback,
-  jadi pastikan salah satu font tersebut tersedia di mesin server.
+- Font terjemahan bisa dipilih di tab **Teks** (family, bold, skala 70–130%).
+  Font utama harus tersedia di mesin server; kalau tidak ada, overlay memakai
+  fallback CJK/sistem (PingFang/Noto/YaHei/DejaVu/Liberation) agar huruf tetap
+  tampil. Posisi/ukuran tiap kotak teks disimpan per halaman.
 - Translate Google gratis bisa rate-limit (sudah ada jeda + fallback).
 
 ---
@@ -283,9 +321,10 @@ app/
     translate-text/route.ts   # POST /api/translate-text
     process/route.ts          # POST /api/process (multipart FormData)
     jobs/[jobId]/route.ts     # status/hapus job
-    jobs/[jobId]/editor/route.ts  # data editor mask manual
+    jobs/[jobId]/editor/route.ts  # data editor (mask, font, kotak teks)
     jobs/[jobId]/source/route.ts  # halaman asli untuk editor
-    jobs/[jobId]/mask/route.ts    # render ulang + mask manual
+    jobs/[jobId]/textbase/route.ts # halaman dasar workspace teks (tanpa teks)
+    jobs/[jobId]/mask/route.ts    # render ulang + mask/font/kotak teks
     outputs/[jobId]/[file]/route.ts  # GET file hasil (pengganti express.static)
 lib/
   ocr.ts            # sharp + tesseract.js
@@ -294,6 +333,9 @@ lib/
   bubble.ts         # YOLO bubble via Python sidecar (sekali per job, fallback aman)
   translate.ts      # auto (Google gratis → MyMemory), openrouter, opencode
   overlay.ts        # sharp composite SVG
+  fonts.ts          # daftar font terjemahan (dipakai client & server)
+  textLayout.ts     # wrap & auto-fit teks (dipakai client & server)
+  renderPage.ts     # render ulang satu halaman (dipakai mask & textbase)
   jobFiles.ts       # pembuatan ZIP/PDF (awal & setelah koreksi mask)
   renderStore.ts    # simpan halaman asli + metadata render per halaman
 components/
