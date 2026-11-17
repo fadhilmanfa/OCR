@@ -25,6 +25,8 @@ export interface OverlayPolygonPoint {
 
 export interface OverlayItem {
   text: string;
+  /** Teks sumber hasil OCR (dipakai "Terjemah ulang" tanpa OCR baru). */
+  sourceText?: string;
   bbox: BBox;
   /** Kontur bubble dalam koordinat halaman (opsional; tanpa ini = fallback). */
   polygon?: OverlayPolygonPoint[];
@@ -172,6 +174,14 @@ export interface TextBoxOverride {
   deleted?: boolean;
   /** Isi teks pengganti hasil edit user (opsional). */
   text?: string;
+  /** Skala font per kotak (persen, default 100). Diubah saat bingkai di-resize. */
+  scale?: number;
+  /** Font family khusus kotak ini (null/undefined = ikut font halaman). */
+  fontFamily?: string;
+  /** Bold khusus kotak ini (null/undefined = ikut font halaman). */
+  fontBold?: boolean;
+  /** Batas ukuran font (px) agar resize sisi tidak membesarkan teks. */
+  fontCap?: number;
 }
 
 export interface ResolvedTextBox {
@@ -799,15 +809,30 @@ export async function overlayTranslations(
           override || validPolygon(it.polygon) ? { w: 1, h: 1 } : innerFactor(it.fallbackShape);
         const iw = w * f.w;
         const ih = h * f.h;
-        const { fs, lines, lineH } = fitText(label, iw - 8, ih - 8, font.scale);
+        const itemScale = Number.isFinite(override?.scale) && (override?.scale as number) > 0
+          ? (override?.scale as number)
+          : 100;
+        const fontCap =
+          Number.isFinite(override?.fontCap) && (override?.fontCap as number) > 0
+            ? (override?.fontCap as number)
+            : undefined;
+        const { fs, lines, lineH } = fitText(
+          label,
+          iw - 8,
+          ih - 8,
+          font.scale * (itemScale / 100),
+          fontCap,
+        );
         const totalH = lines.length * lineH;
         const cx = x + w / 2;
         // Di mode "bubble"/"none", huruf ikut kontras dengan warna kertas:
         // hitam di kertas terang, putih di panel/bubble gelap.
         const paperColor = itemPaper[k];
         const ink = paperColor && luminance(paperColor) < 0.45 ? "white" : "black";
-        const family = esc(fontStack(font.family));
-        const weight = font.bold ? "bold" : "normal";
+        const itemFamily = override?.fontFamily ?? font.family;
+        const itemBold = typeof override?.fontBold === "boolean" ? override.fontBold : font.bold;
+        const family = esc(fontStack(itemFamily));
+        const weight = itemBold ? "bold" : "normal";
         let ty = y + (h - totalH) / 2 + lineH * 0.8;
         const tspans = lines
           .map((ln) => {
@@ -816,7 +841,9 @@ export async function overlayTranslations(
             return s;
           })
           .join("");
-        return tspans;
+        // Clip ke kotak teks: font sudah di-auto-fit, clip hanya jaring aman
+        // untuk teks ekstrem agar tidak pernah meluber ke luar kotak.
+        return `<clipPath id="tc${k}"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"/></clipPath><g clip-path="url(#tc${k})">${tspans}</g>`;
       })
       .join("");
 

@@ -5,16 +5,21 @@ import {
   Bold,
   BoxSelect,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Eraser,
   Eye,
   File,
   FileImage,
   Files,
+  Languages,
+  Lasso,
   Loader2,
   Maximize2,
   Minimize2,
   Paintbrush,
   Redo2,
+  RefreshCw,
   RotateCcw,
   Scan,
   Trash2,
@@ -27,12 +32,15 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DEFAULT_FONT, FONT_FAMILIES, fontStack, type FontChoice } from "@/lib/fonts";
+import { LANG_LABEL, type AppLang } from "@/lib/languages";
 import { fitText } from "@/lib/textLayout";
+import type { ProcessPage } from "./types";
 
 type Point = [number, number];
 type Tool = "paint" | "erase" | "auto";
-type Tab = "mask" | "text";
+type Tab = "mask" | "text" | "scan";
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+type RescanAction = "mask" | "translate" | "ocr_translate";
 
 interface Rect {
   x0: number;
@@ -78,6 +86,14 @@ interface TextBox {
   box: BoxRect;
   defaultBox: BoxRect;
   deleted: boolean;
+  /** Skala font per kotak (persen). Mengikuti resize pojok / toolbar. */
+  scale: number;
+  /** Override font family per kotak; null = ikut halaman. */
+  fontFamily: string | null;
+  /** Override bold per kotak; null = ikut halaman. */
+  fontBold: boolean | null;
+  /** Batas font (px) saat bingkai di-resize dari sisi. */
+  fontCap: number | null;
 }
 
 interface Snapshot {
@@ -101,6 +117,48 @@ interface EditorData {
   font?: FontChoice;
   fontScope?: "page" | "all";
   textItems?: TextBox[];
+  settings?: ScanSettings;
+}
+
+interface ScanSettings {
+  bubble: string;
+  ocrEngine: string;
+  provider: string;
+  sourceLang: AppLang;
+  targetLang: AppLang;
+}
+
+interface RescanDiffText {
+  id: string;
+  kind: "added" | "removed" | "changed";
+  source: string;
+  oldText: string;
+  newText: string;
+}
+
+interface RescanDiffMask {
+  id: string;
+  kind: "added" | "removed" | "changed";
+  bbox: Rect;
+}
+
+interface RescanPreview {
+  token: string;
+  action: RescanAction;
+  previewUrl: string;
+  via: string;
+  bubbleCount: number;
+  undetected: number;
+  region?: { points: Array<{ x: number; y: number }>; bbox: Rect };
+  diff: {
+    texts: RescanDiffText[];
+    masks: RescanDiffMask[];
+  };
+}
+
+interface LassoDraftState {
+  pointerId: number;
+  points: Point[];
 }
 
 const MAX_STROKES = 300;
@@ -118,6 +176,22 @@ const HANDLES: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 // Pilihan font terjemahan (daftar ada di lib/fonts agar sama dengan server).
 const FONT_SCALES = [70, 80, 90, 100, 110, 120, 130];
 const DEFAULT_FONT_SETTINGS: FontSettings = { ...DEFAULT_FONT, scope: "all" };
+const MIN_BOX_SCALE = 20;
+const MAX_BOX_SCALE = 300;
+
+const DEFAULT_SCAN_SETTINGS: ScanSettings = {
+  bubble: "ogkalu",
+  ocrEngine: "tesseract",
+  provider: "auto",
+  sourceLang: "en",
+  targetLang: "id",
+};
+
+const DIFF_LABEL: Record<"added" | "removed" | "changed", string> = {
+  added: "Baru",
+  removed: "Dihapus",
+  changed: "Berubah",
+};
 
 const LS = {
   fullscreen: "mask-editor:v1:fullscreen",
@@ -247,11 +321,17 @@ function parseTextBoxes(value: unknown): TextBox[] | null {
       box?: unknown;
       defaultBox?: unknown;
       deleted?: unknown;
+      scale?: unknown;
+      fontFamily?: unknown;
+      fontBold?: unknown;
+      fontCap?: unknown;
     };
     const index = Number(raw.index);
     const box = parseBox(raw.box);
     const defaultBox = parseBox(raw.defaultBox);
     if (!Number.isInteger(index) || typeof raw.text !== "string" || !box || !defaultBox) return null;
+    const scaleRaw = Number(raw.scale);
+    const capRaw = Number(raw.fontCap);
     texts.push({
       index,
       text: raw.text,
@@ -259,6 +339,13 @@ function parseTextBoxes(value: unknown): TextBox[] | null {
       box,
       defaultBox,
       deleted: raw.deleted === true,
+      scale: Number.isFinite(scaleRaw) ? clamp(Math.round(scaleRaw), 20, 300) : 100,
+      fontFamily:
+        typeof raw.fontFamily === "string" && (FONT_FAMILIES as readonly string[]).includes(raw.fontFamily)
+          ? raw.fontFamily
+          : null,
+      fontBold: typeof raw.fontBold === "boolean" ? raw.fontBold : null,
+      fontCap: Number.isFinite(capRaw) && capRaw > 0 ? clamp(Math.round(capRaw), 1, 500) : null,
     });
   }
   return texts;
@@ -465,13 +552,22 @@ function RibbonButton({
 export default function MaskEditor({
   jobId,
   file,
+  pageFiles,
   onClose,
   onSaved,
+  onPageUpdated,
+  apiKey,
+  googleApiKey,
 }: {
   jobId: string;
   file: string;
+  pageFiles?: string[];
   onClose: () => void;
   onSaved: (version: number, archivesUpdated: boolean, pagesUpdated: number) => void;
+  onPageUpdated?: (page: ProcessPage) => void;
+  /** Key dari form sesi saat ini; dipakai sebagai default panel pindai ulang. */
+  apiKey?: string;
+  googleApiKey?: string;
 }) {
   const [data, setData] = useState<EditorData | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -494,8 +590,17 @@ export default function MaskEditor({
   const [draftNotice, setDraftNotice] = useState(false);
   const [hover, setHover] = useState<Point | null>(null);
   const [originalAutos, setOriginalAutos] = useState<AutoBox[]>([]);
-  const [tab, setTab] = useState<Tab>(() => (lsGet(LS.tab) === "text" ? "text" : "mask"));
+  const [tab, setTab] = useState<Tab>(() => {
+    const saved = lsGet(LS.tab);
+    return saved === "text" || saved === "scan" ? saved : "mask";
+  });
   const [font, setFont] = useState<FontSettings>(DEFAULT_FONT_SETTINGS);
+  const [initialFont, setInitialFont] = useState<FontSettings>(DEFAULT_FONT_SETTINGS);
+  const [activeFile, setActiveFile] = useState(file);
+  const [pendingNav, setPendingNav] = useState<number | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [navClosing, setNavClosing] = useState(false);
+  const closeTimerRef = useRef<number | null>(null);
   const [texts, setTexts] = useState<TextBox[]>([]);
   const [selectedText, setSelectedText] = useState<number | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
@@ -504,6 +609,24 @@ export default function MaskEditor({
     strokes: [],
     autos: [],
   });
+  // Pindai ulang: reloadKey memaksa efek muat data jalan lagi setelah apply.
+  const [reloadKey, setReloadKey] = useState(0);
+  const [scanAction, setScanAction] = useState<RescanAction>("ocr_translate");
+  const [scanSettings, setScanSettings] = useState<ScanSettings>(DEFAULT_SCAN_SETTINGS);
+  const [scanDefaults, setScanDefaults] = useState<ScanSettings>(DEFAULT_SCAN_SETTINGS);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [candidate, setCandidate] = useState<RescanPreview | null>(null);
+  const [pickedText, setPickedText] = useState<Set<string>>(new Set());
+  const [pickedMask, setPickedMask] = useState<Set<string>>(new Set());
+  const [compareVersion, setCompareVersion] = useState(0);
+  const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? "");
+  const [googleKeyInput, setGoogleKeyInput] = useState(googleApiKey ?? "");
+  const [lassoMode, setLassoMode] = useState(false);
+  const [lassoPoints, setLassoPoints] = useState<Point[]>([]);
+  const [lassoDraft, setLassoDraft] = useState<Point[]>([]);
+  const [editingText, setEditingText] = useState<number | null>(null);
+  const [toolbarPos, setToolbarPos] = useState<{ left: number; top: number } | null>(null);
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -514,6 +637,7 @@ export default function MaskEditor({
   const sampleRef = useRef<PixelCache | null>(null);
   const originalSampleRef = useRef<PixelCache | null>(null);
   const brushRatioRef = useRef(DEFAULT_BRUSH_RATIO);
+  const scanSettingsLoadedRef = useRef<string | null>(null);
   const serverStrokesRef = useRef<Stroke[]>([]);
   const serverTextsRef = useRef<TextBox[]>([]);
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
@@ -533,12 +657,18 @@ export default function MaskEditor({
   } | null>(null);
   const spaceRef = useRef(false);
   const textEditSnapshotRef = useRef<Snapshot | null>(null);
+  const fontEditSnapshotRef = useRef<Snapshot | null>(null);
+  const lastTextBoxClickRef = useRef<{ index: number; time: number } | null>(null);
+  const lassoRef = useRef<LassoDraftState | null>(null);
   const textDragRef = useRef<{
     index: number;
     handle: Handle | null;
     startX: number;
     startY: number;
     origin: BoxRect;
+    originScale: number;
+    originFs: number;
+    originCap: number | null;
     moved: boolean;
     previous: Snapshot;
   } | null>(null);
@@ -548,18 +678,64 @@ export default function MaskEditor({
     setFuture([]);
   }, []);
 
+  // Tutup editor dengan animasi keluar dulu sebelum unmount.
+  const requestClose = useCallback(() => {
+    if (saving || closing) return;
+    if (candidate) {
+      void fetch(
+        `/api/jobs/${encodeURIComponent(jobId)}/rescan?token=${candidate.token}`,
+        { method: "DELETE" },
+      ).catch(() => {});
+      setCandidate(null);
+    }
+    setClosing(true);
+    closeTimerRef.current = window.setTimeout(() => onClose(), 180);
+  }, [saving, closing, candidate, jobId, onClose]);
+
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+      }
+    },
+    []
+  );
+
   // Muat halaman + preferensi brush + draf yang belum diterapkan.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // Bersihkan state halaman sebelumnya sebelum memuat halaman baru.
+      setData(null);
+      setLoadError("");
+      setSaveError("");
+      setDraftNotice(false);
+      setPast([]);
+      setFuture([]);
+      setStrokes([]);
+      setAutos([]);
+      setTexts([]);
+      setSelectedAuto(null);
+      setSelectedText(null);
+      setEditingText(null);
+      setToolbarPos(null);
+      setCandidate(null);
+      setPickedText(new Set());
+      setPickedMask(new Set());
+      setScanError("");
+      setLassoMode(false);
+      setLassoPoints([]);
+      setLassoDraft([]);
+      lassoRef.current = null;
+      setView({ scale: 1, pan: { x: 0, y: 0 } });
       try {
         const res = await fetch(
-          `/api/jobs/${encodeURIComponent(jobId)}/editor?file=${encodeURIComponent(file)}`,
+          `/api/jobs/${encodeURIComponent(jobId)}/editor?file=${encodeURIComponent(activeFile)}`,
           { cache: "no-store" },
         );
         const body = await res.json();
         if (!res.ok) {
-          if (res.status === 404 || res.status === 410) lsSet(LS.draft(jobId, file), null);
+          if (res.status === 404 || res.status === 410) lsSet(LS.draft(jobId, activeFile), null);
           throw new Error(body.error || "Gagal memuat data halaman");
         }
         if (cancelled) return;
@@ -590,16 +766,43 @@ export default function MaskEditor({
           box: { ...t.box },
           defaultBox: { ...t.defaultBox },
           deleted: t.deleted === true,
+          scale: Number.isFinite(t.scale) ? clamp(Math.round(t.scale), MIN_BOX_SCALE, MAX_BOX_SCALE) : 100,
+          fontFamily:
+            typeof t.fontFamily === "string" && (FONT_FAMILIES as readonly string[]).includes(t.fontFamily)
+              ? t.fontFamily
+              : null,
+          fontBold: typeof t.fontBold === "boolean" ? t.fontBold : null,
+          fontCap:
+            Number.isFinite(t.fontCap) && (t.fontCap as number) > 0
+              ? clamp(Math.round(t.fontCap as number), 1, 500)
+              : null,
         }));
         serverTextsRef.current = serverTexts;
         setTexts(serverTexts);
-        setFont({
+        if (editor.settings) {
+          const key = `${jobId}:${activeFile}`;
+          if (scanSettingsLoadedRef.current !== key) {
+            scanSettingsLoadedRef.current = key;
+            const nextScan: ScanSettings = {
+              bubble: editor.settings.bubble,
+              ocrEngine: editor.settings.ocrEngine,
+              provider: editor.settings.provider,
+              sourceLang: editor.settings.sourceLang,
+              targetLang: editor.settings.targetLang,
+            };
+            setScanSettings(nextScan);
+            setScanDefaults(nextScan);
+          }
+        }
+        const nextFont: FontSettings = {
           ...DEFAULT_FONT,
           ...(editor.font ?? {}),
           scope: editor.fontScope === "page" ? "page" : "all",
-        });
+        };
+        setFont(nextFont);
+        setInitialFont(nextFont);
 
-        const draft = parseDraft(lsGet(LS.draft(jobId, file)));
+        const draft = parseDraft(lsGet(LS.draft(jobId, activeFile)));
         const draftAutos = draft?.autos ?? serverAutos;
         const draftTexts = draft?.texts ?? serverTexts;
         const draftState = JSON.stringify({
@@ -625,7 +828,7 @@ export default function MaskEditor({
     return () => {
       cancelled = true;
     };
-  }, [jobId, file]);
+  }, [jobId, activeFile, reloadKey]);
 
   // Gambar dasar tanpa teks (asli + mask + goresan tersimpan). Dipakai preview
   // tab Mask (teks digambar ulang di atas sapuan brush) dan workspace tab Teks.
@@ -686,10 +889,10 @@ export default function MaskEditor({
   useEffect(() => {
     if (!data) return;
     const timer = window.setTimeout(() => {
-      lsSet(LS.draft(jobId, file), JSON.stringify({ strokes, autos, texts }));
+      lsSet(LS.draft(jobId, activeFile), JSON.stringify({ strokes, autos, texts }));
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [strokes, autos, texts, data, jobId, file]);
+  }, [strokes, autos, texts, data, jobId, activeFile]);
 
   const previewScale = data ? Math.min(1, PREVIEW_MAX / Math.max(data.width, data.height)) : 1;
   const previewW = data ? Math.max(1, Math.round(data.width * previewScale)) : 1;
@@ -708,11 +911,19 @@ export default function MaskEditor({
           text.text,
           Math.max(1, text.box.w - 8),
           Math.max(1, text.box.h - 8),
-          font.scale,
+          font.scale * (text.scale / 100),
+          text.fontCap ?? undefined,
         );
-        return { index: text.index, box: text.box, fs: fitted.fs, lines: fitted.lines };
+        return {
+          index: text.index,
+          box: text.box,
+          fs: fitted.fs,
+          lines: fitted.lines,
+          family: text.fontFamily ?? font.family,
+          bold: text.fontBold ?? font.bold,
+        };
       }),
-    [texts, font.scale],
+    [texts, font.scale, font.family, font.bold],
   );
   const brushMin = 2;
   const brushMax = data
@@ -722,15 +933,96 @@ export default function MaskEditor({
   const deletedCount = autos.length - autoCount;
   const selectedBox = selectedAuto !== null ? autos[selectedAuto] : undefined;
   const selectedTextBox = selectedText !== null ? texts[selectedText] : undefined;
+
+  // Posisi toolbar font mengambang di atas kotak terpilih (koordinat layar).
+  useEffect(() => {
+    if (tab !== "text" || selectedText === null || !data) {
+      const frame = window.requestAnimationFrame(() => setToolbarPos(null));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    let frame = 0;
+    const update = () => {
+      const stage = stageRef.current;
+      const text = texts[selectedText];
+      if (!stage || !text) {
+        setToolbarPos(null);
+        return;
+      }
+      const rect = stage.getBoundingClientRect();
+      const boxLeft = rect.left + (text.box.x / data.width) * rect.width;
+      const boxTop = rect.top + (text.box.y / data.height) * rect.height;
+      const boxBottom =
+        rect.top + ((text.box.y + text.box.h) / data.height) * rect.height;
+      const width = 360;
+      const left = clamp(boxLeft, 8, Math.max(8, window.innerWidth - width - 8));
+      const top =
+        boxTop > 80
+          ? boxTop - 58
+          : Math.min(window.innerHeight - 70, boxBottom + 8);
+      setToolbarPos({ left, top: Math.max(8, top) });
+    };
+    const schedule = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(update);
+    };
+    schedule();
+    window.addEventListener("resize", schedule);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", schedule);
+    };
+  }, [tab, selectedText, texts, view, stageW, stageH, data]);
   const autosDirty = JSON.stringify(autos) !== JSON.stringify(originalAutos);
   const editedTextCount = texts.filter(
-    (t) => t.deleted || t.text !== t.originalText || !sameBox(t.box, t.defaultBox),
+    (t) =>
+      t.deleted ||
+      t.text !== t.originalText ||
+      !sameBox(t.box, t.defaultBox) ||
+      t.scale !== 100 ||
+      t.fontFamily !== null ||
+      t.fontBold !== null ||
+      t.fontCap !== null,
   ).length;
   const deletedTextCount = texts.filter((t) => t.deleted).length;
   const textsDirty = editedTextCount > 0;
   const maskDirty =
     JSON.stringify(strokes) !== JSON.stringify(initialMask.strokes) ||
     JSON.stringify(autos) !== JSON.stringify(initialMask.autos);
+  const fontDirty = JSON.stringify(font) !== JSON.stringify(initialFont);
+  const hasChanges = maskDirty || textsDirty || fontDirty;
+  const needsOpenRouterKey =
+    scanAction !== "mask" &&
+    (scanSettings.provider === "openrouter" ||
+      (scanAction === "ocr_translate" && scanSettings.ocrEngine === "vision_llm"));
+  const needsGoogleKey =
+    scanAction !== "translate" &&
+    (scanSettings.bubble === "google" ||
+      (scanAction === "ocr_translate" && scanSettings.ocrEngine === "google_vision"));
+  const scanBlocked = !data || scanBusy;
+  const lassoBox = lassoPoints.length
+    ? lassoPoints.reduce(
+        (acc, [x, y]) => ({
+          x0: Math.min(acc.x0, x),
+          y0: Math.min(acc.y0, y),
+          x1: Math.max(acc.x1, x),
+          y1: Math.max(acc.y1, y),
+        }),
+        { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity },
+      )
+    : null;
+  const activeLasso = lassoDraft.length ? lassoDraft : lassoPoints;
+  const compareLasso: Point[] =
+    lassoPoints.length > 0
+      ? lassoPoints
+      : (candidate?.region?.points ?? []).map((p) => [p.x, p.y] as Point);
+  const candidateRows = candidate
+    ? candidate.diff.texts.length + candidate.diff.masks.length
+    : 0;
+
+  const pageList = pageFiles && pageFiles.length > 0 ? pageFiles : [file];
+  const fileIndex = pageList.indexOf(activeFile);
+  const canPrev = fileIndex > 0;
+  const canNext = fileIndex >= 0 && fileIndex < pageList.length - 1;
 
   const rebuildSample = useCallback(() => {
     const img = imgRef.current;
@@ -957,6 +1249,10 @@ export default function MaskEditor({
         text: t.originalText,
         box: { ...t.defaultBox },
         deleted: false,
+        scale: 100,
+        fontFamily: null,
+        fontBold: null,
+        fontCap: null,
       })),
     );
     setSelectedText(null);
@@ -984,8 +1280,37 @@ export default function MaskEditor({
     setTexts((prev) => prev.map((t, i) => (i === index ? { ...t, text: value } : t)));
   }, []);
 
+  const updateSelectedFont = useCallback(
+    (
+      patch: Partial<{
+        fontFamily: string | null;
+        fontBold: boolean | null;
+        scale: number;
+        fontCap: number | null;
+      }>,
+    ) => {
+      if (selectedText === null) return;
+      setTexts((prev) =>
+        prev.map((t, i) => (i === selectedText ? { ...t, ...patch } : t)),
+      );
+    },
+    [selectedText],
+  );
+
+  const resetSelectedFont = useCallback(() => {
+    if (selectedText === null) return;
+    pushPast({ strokes, autos, texts });
+    setTexts((prev) =>
+      prev.map((t, i) =>
+        i === selectedText
+          ? { ...t, fontFamily: null, fontBold: null, scale: 100, fontCap: null }
+          : t,
+      ),
+    );
+  }, [selectedText, strokes, autos, texts, pushPast]);
+
   const discardDraft = useCallback(() => {
-    lsSet(LS.draft(jobId, file), null);
+    lsSet(LS.draft(jobId, activeFile), null);
     setDraftNotice(false);
     setStrokes(serverStrokesRef.current);
     setAutos(originalAutos.map((a) => ({ bbox: { ...a.bbox }, deleted: false })));
@@ -994,7 +1319,7 @@ export default function MaskEditor({
     setSelectedText(null);
     setPast([]);
     setFuture([]);
-  }, [jobId, file, originalAutos]);
+  }, [jobId, activeFile, originalAutos]);
 
   function chooseTool(value: Tool) {
     setTool(value);
@@ -1003,9 +1328,15 @@ export default function MaskEditor({
   }
 
   function chooseTab(value: Tab) {
+    if (candidate && value !== "scan") {
+      setScanError("Selesaikan pembanding dulu (Terapkan/Batal) sebelum pindah tab.");
+      return;
+    }
     setTab(value);
     setSelectedAuto(null);
     setSelectedText(null);
+    setEditingText(null);
+    setToolbarPos(null);
     setHover(null);
   }
 
@@ -1067,6 +1398,16 @@ export default function MaskEditor({
       }
       if (typing) return;
       if (e.key === "Escape") {
+        if (pendingNav !== null) {
+          if (!saving && !navClosing) {
+            setNavClosing(true);
+            window.setTimeout(() => {
+              setPendingNav(null);
+              setNavClosing(false);
+            }, 150);
+          }
+          return;
+        }
         if (selectedAuto !== null) {
           setSelectedAuto(null);
           return;
@@ -1075,7 +1416,7 @@ export default function MaskEditor({
           setSelectedText(null);
           return;
         }
-        if (!saving) onClose();
+        requestClose();
         return;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && tab === "text" && selectedText !== null) {
@@ -1101,8 +1442,10 @@ export default function MaskEditor({
     return () => window.removeEventListener("keydown", onKey);
   }, [
     brushPx,
-    onClose,
+    navClosing,
+    pendingNav,
     redoStep,
+    requestClose,
     resetView,
     saving,
     selectedAuto,
@@ -1160,20 +1503,46 @@ export default function MaskEditor({
     return null;
   }
 
-  function startTextDrag(pointer: React.PointerEvent<HTMLElement>, index: number, handle: Handle | null) {    if (!data || saving) return;
+  function startTextDrag(pointer: React.PointerEvent<HTMLElement>, index: number, handle: Handle | null) {
+    if (!data || saving) return;
     pointer.stopPropagation();
     pointer.preventDefault();
-    pointer.currentTarget.setPointerCapture(pointer.pointerId);
     setSelectedText(index);
+    // Double-click pada kotak (bukan handle) = mulai edit teks inline.
+    if (!handle) {
+      const now = Date.now();
+      const last = lastTextBoxClickRef.current;
+      lastTextBoxClickRef.current = { index, time: now };
+      if (last && last.index === index && now - last.time < 340) {
+        lastTextBoxClickRef.current = null;
+        setEditingText(index);
+        return;
+      }
+    } else {
+      lastTextBoxClickRef.current = null;
+      setEditingText(null);
+    }
+    pointer.currentTarget.setPointerCapture(pointer.pointerId);
     // Teks yang sudah dihapus tetap bisa dipilih (untuk diaktifkan lagi),
     // tapi tidak bisa digeser/di-resize.
     if (texts[index].deleted) return;
+    const current = texts[index];
+    const fitted = fitText(
+      current.text,
+      Math.max(1, current.box.w - 8),
+      Math.max(1, current.box.h - 8),
+      font.scale * (current.scale / 100),
+      current.fontCap ?? undefined,
+    );
     textDragRef.current = {
       index,
       handle,
       startX: pointer.clientX,
       startY: pointer.clientY,
-      origin: { ...texts[index].box },
+      origin: { ...current.box },
+      originScale: current.scale,
+      originFs: fitted.fs,
+      originCap: current.fontCap,
       moved: false,
       previous: { strokes, autos, texts },
     };
@@ -1220,7 +1589,32 @@ export default function MaskEditor({
       y1 = r.y1;
     }
     const box = { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
-    setTexts((prev) => prev.map((t, i) => (i === drag.index ? { ...t, box } : t)));
+    let scale = drag.originScale;
+    let fontCap = drag.originCap;
+    if (drag.handle) {
+      const corner = drag.handle.length === 2;
+      if (corner) {
+        // Hanya pojok yang men-skala font (rasio area).
+        const factor = Math.sqrt(
+          (box.w / Math.max(1, o.w)) * (box.h / Math.max(1, o.h)),
+        );
+        scale = clamp(
+          Math.round(drag.originScale * factor),
+          MIN_BOX_SCALE,
+          MAX_BOX_SCALE,
+        );
+        fontCap = null;
+      } else {
+        // Sisi kiri/kanan/atas/bawah: ukuran kotak berubah, font tidak
+        // membesar. Cap = ukuran font saat drag dimulai; auto-fit masih
+        // boleh mengecil kalau kotak terlalu kecil.
+        scale = drag.originScale;
+        fontCap = drag.originFs;
+      }
+    }
+    setTexts((prev) =>
+      prev.map((t, i) => (i === drag.index ? { ...t, box, scale, fontCap } : t)),
+    );
   }
 
   function onTextDragEnd() {
@@ -1237,6 +1631,19 @@ export default function MaskEditor({
   function endTextEdit() {
     const snapshot = textEditSnapshotRef.current;
     textEditSnapshotRef.current = null;
+    if (snapshot && JSON.stringify(snapshot.texts) !== JSON.stringify(texts)) {
+      pushPast(snapshot);
+    }
+  }
+
+  function beginFontEdit() {
+    if (selectedText === null) return;
+    fontEditSnapshotRef.current = { strokes, autos, texts };
+  }
+
+  function endFontEdit() {
+    const snapshot = fontEditSnapshotRef.current;
+    fontEditSnapshotRef.current = null;
     if (snapshot && JSON.stringify(snapshot.texts) !== JSON.stringify(texts)) {
       pushPast(snapshot);
     }
@@ -1474,8 +1881,8 @@ export default function MaskEditor({
     gestureRef.current = "idle";
   }
 
-  async function apply() {
-    if (!data || saving) return;
+  async function savePage() {
+    if (!data || saving) return false;
     setSaving(true);
     setSaveError("");
     try {
@@ -1502,7 +1909,16 @@ export default function MaskEditor({
       // `color` hanya untuk preview lokal; server sampling warnanya sendiri.
       const apiStrokes = strokes.map((s) => ({ mode: s.mode, size: s.size, points: s.points }));
       const textOverrides = texts
-        .filter((t) => t.deleted || t.text !== t.originalText || !sameBox(t.box, t.defaultBox))
+        .filter(
+          (t) =>
+            t.deleted ||
+            t.text !== t.originalText ||
+            !sameBox(t.box, t.defaultBox) ||
+            t.scale !== 100 ||
+            t.fontFamily !== null ||
+            t.fontBold !== null ||
+            t.fontCap !== null,
+        )
         .map((t) => ({
           index: t.index,
           x: Math.round(t.box.x),
@@ -1510,6 +1926,10 @@ export default function MaskEditor({
           w: Math.round(t.box.w),
           h: Math.round(t.box.h),
           ...(t.text !== t.originalText ? { text: t.text } : {}),
+          ...(t.scale !== 100 ? { scale: Math.round(t.scale) } : {}),
+          ...(t.fontFamily ? { fontFamily: t.fontFamily } : {}),
+          ...(t.fontBold !== null ? { fontBold: t.fontBold } : {}),
+          ...(t.fontCap !== null ? { fontCap: Math.round(t.fontCap) } : {}),
           ...(t.deleted ? { deleted: true } : {}),
         }));
       const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/mask`, {
@@ -1526,18 +1946,270 @@ export default function MaskEditor({
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Gagal menyimpan koreksi");
-      lsSet(LS.draft(jobId, file), null);
+      lsSet(LS.draft(jobId, activeFile), null);
       onSaved(
         Number(body.version) || Date.now(),
         body.archivesUpdated !== false,
         Number(body.pagesUpdated) || 1,
       );
-      onClose();
+      return true;
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  async function apply() {
+    if (!(await savePage())) return;
+    requestClose();
+  }
+
+  async function runRescan() {
+    if (!data || scanBusy || candidate) return;
+    setScanBusy(true);
+    setScanError("");
+    try {
+      const region =
+        lassoPoints.length >= 3
+          ? { points: lassoPoints.map(([x, y]) => ({ x, y })) }
+          : undefined;
+      const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/rescan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file: activeFile,
+          action: scanAction,
+          settings: scanSettings,
+          ...(region ? { region } : {}),
+          ...(apiKeyInput.trim() ? { apiKey: apiKeyInput.trim() } : {}),
+          ...(googleKeyInput.trim() ? { googleApiKey: googleKeyInput.trim() } : {}),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Gagal memindai ulang");
+      const next = body as RescanPreview;
+      setCandidate(next);
+      setPickedText(new Set(next.diff.texts.map((row) => row.id)));
+      setPickedMask(new Set(next.diff.masks.map((row) => row.id)));
+      setCompareVersion(Date.now());
+    } catch (e) {
+      setScanError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setScanBusy(false);
+    }
+  }
+
+  async function applyCandidate() {
+    if (!candidate || scanBusy) return;
+    setScanBusy(true);
+    setScanError("");
+    try {
+      const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/rescan/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: candidate.token,
+          selectedText: [...pickedText],
+          selectedMask: [...pickedMask],
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Gagal menerapkan hasil pindai ulang");
+      lsSet(LS.draft(jobId, activeFile), null);
+      setDraftNotice(false);
+      setCandidate(null);
+      setPickedText(new Set());
+      setPickedMask(new Set());
+      resetLasso();
+      setReloadKey((value) => value + 1);
+      onSaved(Number(body.version) || Date.now(), body.archivesUpdated !== false, 1);
+      if (body.page) onPageUpdated?.(body.page as ProcessPage);
+    } catch (e) {
+      setScanError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setScanBusy(false);
+    }
+  }
+
+  function cancelCandidate() {
+    if (!candidate) return;
+    void fetch(
+      `/api/jobs/${encodeURIComponent(jobId)}/rescan?token=${candidate.token}`,
+      { method: "DELETE" },
+    ).catch(() => {});
+    setCandidate(null);
+    setPickedText(new Set());
+    setPickedMask(new Set());
+    resetLasso();
+    setScanError("");
+  }
+
+  function togglePicked(kind: "text" | "mask", id: string) {
+    const setter = kind === "text" ? setPickedText : setPickedMask;
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function resetScanSettings() {
+    setScanSettings(scanDefaults);
+  }
+
+  // ---- Lasso area (circle to search) -------------------------------------
+  function stagePoint(event: { clientX: number; clientY: number }): Point | null {
+    const stage = stageRef.current;
+    if (!stage || !data) return null;
+    const rect = stage.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return [
+      clamp(((event.clientX - rect.left) / rect.width) * data.width, 0, data.width),
+      clamp(((event.clientY - rect.top) / rect.height) * data.height, 0, data.height),
+    ];
+  }
+
+  function resetLasso() {
+    lassoRef.current = null;
+    setLassoMode(false);
+    setLassoDraft([]);
+    setLassoPoints([]);
+  }
+
+  function toggleLasso() {
+    if (scanBusy || candidate) return;
+    if (lassoMode) {
+      lassoRef.current = null;
+      setLassoDraft([]);
+      setLassoMode(false);
+      return;
+    }
+    setLassoPoints([]);
+    setLassoDraft([]);
+    setLassoMode(true);
+    setScanError("");
+  }
+
+  function retryLasso() {
+    if (scanBusy || candidate) return;
+    setLassoPoints([]);
+    setLassoDraft([]);
+    setLassoMode(true);
+    setScanError("");
+  }
+
+  function clearLasso() {
+    if (scanBusy || candidate) return;
+    setLassoPoints([]);
+    setLassoDraft([]);
+    setLassoMode(false);
+    lassoRef.current = null;
+  }
+
+  function startLasso(event: React.PointerEvent<HTMLDivElement>) {
+    if (!data || !lassoMode || scanBusy || candidate) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = stagePoint(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    lassoRef.current = { pointerId: event.pointerId, points: [point] };
+    setLassoDraft([point]);
+    setScanError("");
+  }
+
+  function onLassoMove(event: React.PointerEvent<HTMLDivElement>) {
+    const state = lassoRef.current;
+    if (!state || state.pointerId !== event.pointerId || !data) return;
+    const point = stagePoint(event);
+    if (!point) return;
+    const last = state.points[state.points.length - 1];
+    const minDist = Math.max(1, data.width * 0.002);
+    if (Math.hypot(point[0] - last[0], point[1] - last[1]) < minDist) return;
+    if (state.points.length >= 240) return;
+    state.points.push(point);
+    setLassoDraft([...state.points]);
+  }
+
+  function endLasso(event: React.PointerEvent<HTMLDivElement>) {
+    const state = lassoRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    lassoRef.current = null;
+    setLassoDraft([]);
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // pointer sudah lepas
+    }
+    const points = state.points;
+    if (points.length < 3) {
+      setScanError("Area terlalu kecil. Tarik lingkaran lebih lebar.");
+      return;
+    }
+    const xs = points.map(([x]) => x);
+    const ys = points.map(([, y]) => y);
+    const width = Math.max(...xs) - Math.min(...xs);
+    const height = Math.max(...ys) - Math.min(...ys);
+    if (width < 8 || height < 8) {
+      setScanError("Area terlalu kecil. Tarik lingkaran lebih lebar.");
+      return;
+    }
+    setLassoPoints(points);
+    setLassoMode(false);
+    setScanError("");
+  }
+
+  function cancelLasso(event: React.PointerEvent<HTMLDivElement>) {
+    if (lassoRef.current) {
+      lassoRef.current = null;
+      setLassoDraft([]);
+    }
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // abaikan
+    }
+  }
+
+  function switchPage(index: number) {
+    const target = pageList[index];
+    if (!target) return;
+    setPendingNav(null);
+    setActiveFile(target);
+  }
+
+  function requestPage(index: number) {
+    if (saving || scanBusy) return;
+    if (candidate) {
+      setScanError("Selesaikan pembanding dulu (Terapkan/Batal) sebelum pindah halaman.");
+      return;
+    }
+    if (index < 0 || index >= pageList.length || index === fileIndex) return;
+    if (hasChanges) {
+      setPendingNav(index);
+      return;
+    }
+    switchPage(index);
+  }
+
+  async function saveAndGo() {
+    if (pendingNav === null) return;
+    const target = pendingNav;
+    if (!(await savePage())) return;
+    closeNavThen(() => switchPage(target));
+  }
+
+  function closeNavThen(after?: () => void) {
+    if (navClosing) return;
+    setNavClosing(true);
+    window.setTimeout(() => {
+      setPendingNav(null);
+      setNavClosing(false);
+      after?.();
+    }, 150);
   }
 
   return (
@@ -1545,32 +2217,77 @@ export default function MaskEditor({
       role="dialog"
       aria-modal="true"
       aria-labelledby="mask-editor-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4"
+      className={`fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 ${
+        closing
+          ? "animate-out fade-out-0 duration-150"
+          : "animate-in fade-in-0 duration-200"
+      }`}
     >
       <button
         type="button"
         aria-label="Tutup editor"
-        onClick={() => !saving && onClose()}
+        onClick={requestClose}
         className="absolute inset-0 cursor-default bg-black/60"
       />
       <div
         className={`bg-background relative flex w-full flex-col overflow-hidden border-2 ${
-          fullscreen ? "h-full max-h-none max-w-none" : "h-[94vh] max-w-5xl"
+          closing
+            ? "animate-out fade-out-0 zoom-out-95 duration-150"
+            : "animate-in fade-in-0 zoom-in-95 duration-200"
+        } ${fullscreen ? "h-full max-h-none max-w-none" : "h-[94vh] max-w-5xl"} ${
+          tab === "scan" && !fullscreen
+            ? "lg:mr-[21rem] lg:max-w-[calc(100vw-25rem)]"
+            : ""
         }`}
       >
+        {pageList.length > 1 && (
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label="Halaman sebelumnya"
+              title="Halaman sebelumnya"
+              disabled={!canPrev || saving}
+              onClick={() => requestPage(fileIndex - 1)}
+              className="bg-background/90 absolute top-1/2 left-2 z-20 size-9 -translate-y-1/2 shadow-sm disabled:opacity-40"
+            >
+              <ChevronLeft className="size-5" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label="Halaman berikutnya"
+              title="Halaman berikutnya"
+              disabled={!canNext || saving}
+              onClick={() => requestPage(fileIndex + 1)}
+              className="bg-background/90 absolute top-1/2 right-2 z-20 size-9 -translate-y-1/2 shadow-sm disabled:opacity-40"
+            >
+              <ChevronRight className="size-5" />
+            </Button>
+          </>
+        )}
         <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-3">
           <div className="min-w-0 flex-1">
             <h2 id="mask-editor-title" className="truncate text-sm font-semibold">
-              Koreksi mask — {data?.file || file}
+              Koreksi mask — {data?.file || activeFile}
             </h2>
             <p className="text-muted-foreground text-xs">
               {tab === "text"
                 ? "Pilih kotak untuk mengubah isi & font. Geser = pindah, handle = ukuran, Delete = hapus teks. Terapkan untuk merender."
-                : tool === "auto"
-                  ? "Klik kotak kuning untuk memilih. Geser = pindah, tarik handle = ubah ukuran, Delete = hapus, klik kotak merah = aktifkan lagi."
-                  : "Brush langsung menimpa dengan warna kertas (live preview). Ctrl+scroll zoom, scroll geser, Shift+scroll kanan/kiri, Space+drag pan."}
+                : tab === "scan"
+                  ? "Pindai ulang: pilih aksi, bandingkan hasil lama vs baru, lalu terapkan per item."
+                  : tool === "auto"
+                    ? "Klik kotak kuning untuk memilih. Geser = pindah, tarik handle = ubah ukuran, Delete = hapus, klik kotak merah = aktifkan lagi."
+                    : "Brush langsung menimpa dengan warna kertas (live preview). Ctrl+scroll zoom, scroll geser, Shift+scroll kanan/kiri, Space+drag pan."}
             </p>
           </div>
+          {pageList.length > 1 && fileIndex >= 0 && (
+            <Badge variant="outline" className="shrink-0 tabular-nums">
+              {fileIndex + 1} / {pageList.length}
+            </Badge>
+          )}
           {data && data.undetected > 0 && (
             <Badge variant="secondary" className="shrink-0">
               {data.undetected} bubble tak terdeteksi
@@ -1586,7 +2303,7 @@ export default function MaskEditor({
           >
             {fullscreen ? <Minimize2 /> : <Maximize2 />}
           </Button>
-          <Button type="button" variant="ghost" size="icon" aria-label="Tutup" onClick={onClose} disabled={saving}>
+          <Button type="button" variant="ghost" size="icon" aria-label="Tutup" onClick={requestClose} disabled={saving}>
             <X />
           </Button>
         </header>
@@ -1599,6 +2316,7 @@ export default function MaskEditor({
           {([
             ["mask", "Mask"],
             ["text", "Teks"],
+            ["scan", "Pindai"],
           ] as const).map(([value, label]) => (
             <button
               key={value}
@@ -1703,7 +2421,7 @@ export default function MaskEditor({
               <RibbonButton icon={Scan} label="Fit" title="Sesuaikan ke layar" onClick={resetView} />
             </RibbonGroup>
           </div>
-        ) : (
+        ) : tab === "text" ? (
           <div className="bg-background flex overflow-x-auto border-b" role="tabpanel" aria-label="Teks">
             <RibbonGroup label="Isi teks">
               <textarea
@@ -1818,6 +2536,63 @@ export default function MaskEditor({
               />
             </RibbonGroup>
           </div>
+        ) : (
+          <div className="bg-background flex overflow-x-auto border-b" role="tabpanel" aria-label="Pindai">
+            <RibbonGroup label="Aksi pindai ulang">
+              <RibbonButton
+                icon={BoxSelect}
+                label="Mask ulang"
+                title="Deteksi ulang area mask (teks tetap)"
+                active={scanAction === "mask"}
+                disabled={scanBusy || Boolean(candidate)}
+                onClick={() => {
+                  setScanAction("mask");
+                  setScanError("");
+                }}
+              />
+              <RibbonButton
+                icon={Languages}
+                label="Terjemah"
+                title="Terjemahkan ulang teks sumber yang sudah ada"
+                active={scanAction === "translate"}
+                disabled={scanBusy || Boolean(candidate)}
+                onClick={() => {
+                  setScanAction("translate");
+                  setScanError("");
+                }}
+              />
+              <RibbonButton
+                icon={RefreshCw}
+                label="OCR + Terjemah"
+                title="Baca ulang gambar asli lalu terjemahkan"
+                active={scanAction === "ocr_translate"}
+                disabled={scanBusy || Boolean(candidate)}
+                onClick={() => {
+                  setScanAction("ocr_translate");
+                  setScanError("");
+                }}
+              />
+            </RibbonGroup>
+
+            <RibbonGroup label="Setelan">
+              <RibbonButton
+                icon={RotateCcw}
+                label="Reset"
+                title="Kembalikan setelan ke default job"
+                disabled={scanBusy}
+                onClick={resetScanSettings}
+              />
+            </RibbonGroup>
+
+            <RibbonGroup label="Tampilan">
+              <RibbonButton icon={ZoomOut} label="Perkecil" onClick={() => zoomBy(1 / 1.2)} />
+              <span className="text-muted-foreground flex h-14 w-12 items-center justify-center text-xs tabular-nums">
+                {Math.round(view.scale * 100)}%
+              </span>
+              <RibbonButton icon={ZoomIn} label="Perbesar" onClick={() => zoomBy(1.2)} />
+              <RibbonButton icon={Scan} label="Fit" title="Sesuaikan ke layar" onClick={resetView} />
+            </RibbonGroup>
+          </div>
         )}
 
         <div ref={viewportRef} className="bg-muted/40 relative min-h-0 flex-1 overflow-hidden">
@@ -1841,7 +2616,74 @@ export default function MaskEditor({
                   transformOrigin: "0 0",
                 }}
               >
-                {tab === "mask" ? (
+                {candidate ? (
+                  <div className="absolute inset-0 flex">
+                    <div className="relative h-full w-1/2 border-r">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={`${data.resultUrl}?v=${compareVersion}`}
+                        alt="Sebelum pindai ulang"
+                        className="pointer-events-none h-full w-full select-none object-contain"
+                        draggable={false}
+                      />
+                      <svg
+                        viewBox={`0 0 ${data.width} ${data.height}`}
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                        preserveAspectRatio="none"
+                      >
+                        {compareLasso.length >= 2 && (
+                          <polygon
+                            points={compareLasso.map(([x, y]) => `${x},${y}`).join(" ")}
+                            fill="rgba(37, 99, 235, 0.1)"
+                            stroke="#2563eb"
+                            strokeWidth={2}
+                            strokeDasharray="6 4"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
+                      </svg>
+                      <span className="bg-background/90 absolute top-2 left-2 border px-2 py-0.5 text-[10px] font-medium">
+                        Sebelum
+                      </span>
+                    </div>
+                    <div className="relative h-full w-1/2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={candidate.previewUrl}
+                        alt="Sesudah pindai ulang"
+                        className="pointer-events-none h-full w-full select-none object-contain"
+                        draggable={false}
+                      />
+                      <svg
+                        viewBox={`0 0 ${data.width} ${data.height}`}
+                        className="pointer-events-none absolute inset-0 h-full w-full"
+                        preserveAspectRatio="none"
+                      >
+                        {compareLasso.length >= 2 && (
+                          <polygon
+                            points={compareLasso.map(([x, y]) => `${x},${y}`).join(" ")}
+                            fill="rgba(37, 99, 235, 0.1)"
+                            stroke="#2563eb"
+                            strokeWidth={2}
+                            strokeDasharray="6 4"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
+                      </svg>
+                      <span className="bg-background/90 absolute top-2 left-2 border px-2 py-0.5 text-[10px] font-medium">
+                        Sesudah
+                      </span>
+                    </div>
+                    <span className="bg-background/90 text-muted-foreground absolute inset-x-0 bottom-0 mx-auto w-fit border px-2 py-0.5 text-[10px]">
+                      Pembanding · Ctrl+scroll zoom · scroll geser
+                    </span>
+                    {scanBusy && (
+                      <div className="bg-background/70 absolute inset-0 flex items-center justify-center gap-2 text-xs">
+                        <Loader2 className="size-4 animate-spin" /> Memproses...
+                      </div>
+                    )}
+                  </div>
+                ) : tab === "mask" ? (
                   <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -1906,8 +2748,8 @@ export default function MaskEditor({
                             top: `${(layout.box.y / data.height) * 100}%`,
                             width: `${(layout.box.w / data.width) * 100}%`,
                             height: `${(layout.box.h / data.height) * 100}%`,
-                            fontFamily: fontStack(font.family),
-                            fontWeight: font.bold ? 700 : 400,
+                            fontFamily: fontStack(layout.family),
+                            fontWeight: layout.bold ? 700 : 400,
                             fontSize: `${fontSize}px`,
                             lineHeight: 1.25,
                             whiteSpace: "pre-wrap",
@@ -2027,7 +2869,7 @@ export default function MaskEditor({
                   )}
                 </svg>
                   </>
-                ) : (
+                ) : tab === "text" ? (
                   <>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
@@ -2044,21 +2886,27 @@ export default function MaskEditor({
                     <div
                       className="absolute inset-0"
                       onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) setSelectedText(null);
+                        if (event.target === event.currentTarget) {
+                          setSelectedText(null);
+                          setEditingText(null);
+                        }
                       }}
                     >
                       {texts.map((text, index) => {
-                        if (!text.text.trim()) return null;
+                        if (!text.text.trim() && text.deleted) return null;
                         const selected = selectedText === index;
                         const deleted = text.deleted;
                         const fitted = fitText(
                           text.text,
                           Math.max(1, text.box.w - 8),
                           Math.max(1, text.box.h - 8),
-                          font.scale,
+                          font.scale * (text.scale / 100),
+                          text.fontCap ?? undefined,
                         );
                         const fontSize = fitted.fs * (stageW / Math.max(1, data.width));
                         const handleSize = 10 / view.scale;
+                        const effFamily = text.fontFamily ?? font.family;
+                        const effBold = text.fontBold ?? font.bold;
                         return (
                           <div
                             key={`text-${text.index}`}
@@ -2073,6 +2921,12 @@ export default function MaskEditor({
                             onPointerMove={onTextDragMove}
                             onPointerUp={onTextDragEnd}
                             onPointerCancel={onTextDragEnd}
+                            onDoubleClick={(event) => {
+                              event.stopPropagation();
+                              if (text.deleted) return;
+                              setSelectedText(index);
+                              setEditingText(index);
+                            }}
                           >
                             <div
                               className={`pointer-events-none absolute inset-0 border ${
@@ -2085,21 +2939,49 @@ export default function MaskEditor({
                                     : "border border-dashed border-amber-500/35"
                               }`}
                             />
-                            <div
-                              className="pointer-events-none absolute inset-0 flex items-center justify-center overflow-hidden px-1 text-center"
-                              style={{
-                                fontFamily: fontStack(font.family),
-                                fontWeight: font.bold ? 700 : 400,
-                                fontSize: `${fontSize}px`,
-                                lineHeight: 1.25,
-                                whiteSpace: "pre-wrap",
-                                color: deleted ? "#ef4444" : "#111111",
-                                opacity: deleted ? 0.55 : 1,
-                                textDecoration: deleted ? "line-through" : undefined,
-                              }}
-                            >
-                              {fitted.lines.join("\n")}
-                            </div>
+                            {editingText === index ? (
+                              <textarea
+                                autoFocus
+                                value={text.text}
+                                onChange={(event) => setTextContent(index, event.target.value)}
+                                onFocus={beginTextEdit}
+                                onBlur={() => {
+                                  endTextEdit();
+                                  setEditingText(null);
+                                }}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onDoubleClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Escape") event.currentTarget.blur();
+                                }}
+                                spellCheck={false}
+                                aria-label={`Edit teks kotak ${index + 1}`}
+                                className="bg-background/95 absolute inset-0 z-30 h-full w-full resize-none select-text overflow-hidden border-0 p-1 text-center outline-none"
+                                style={{
+                                  fontFamily: fontStack(effFamily),
+                                  fontWeight: effBold ? 700 : 400,
+                                  fontSize: `${fontSize}px`,
+                                  lineHeight: 1.25,
+                                  color: deleted ? "#ef4444" : "#111111",
+                                }}
+                              />
+                            ) : (
+                              <div
+                                className="pointer-events-none absolute inset-0 flex items-center justify-center overflow-hidden px-1 text-center"
+                                style={{
+                                  fontFamily: fontStack(effFamily),
+                                  fontWeight: effBold ? 700 : 400,
+                                  fontSize: `${fontSize}px`,
+                                  lineHeight: 1.25,
+                                  whiteSpace: "pre-wrap",
+                                  color: deleted ? "#ef4444" : "#111111",
+                                  opacity: deleted ? 0.55 : 1,
+                                  textDecoration: deleted ? "line-through" : undefined,
+                                }}
+                              >
+                                {fitted.lines.join("\n")}
+                              </div>
+                            )}
                             {deleted && (
                               <svg
                                 className="pointer-events-none absolute inset-0 h-full w-full"
@@ -2163,6 +3045,52 @@ export default function MaskEditor({
                       })}
                     </div>
                   </>
+                ) : (
+                  <div
+                    className="absolute inset-0 touch-none"
+                    style={{ cursor: lassoMode ? "crosshair" : "default" }}
+                    onPointerDown={lassoMode ? startLasso : undefined}
+                    onPointerMove={lassoMode ? onLassoMove : undefined}
+                    onPointerUp={lassoMode ? endLasso : undefined}
+                    onPointerCancel={lassoMode ? cancelLasso : undefined}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={data.resultUrl}
+                      alt={`Hasil saat ini ${data.file}`}
+                      className="pointer-events-none h-full w-full select-none object-contain"
+                      draggable={false}
+                    />
+                    <svg
+                      viewBox={`0 0 ${data.width} ${data.height}`}
+                      className="pointer-events-none absolute inset-0 h-full w-full"
+                      preserveAspectRatio="none"
+                    >
+                      {activeLasso.length >= 2 && (
+                        <polygon
+                          points={activeLasso.map(([x, y]) => `${x},${y}`).join(" ")}
+                          fill="rgba(37, 99, 235, 0.12)"
+                          stroke="#2563eb"
+                          strokeWidth={2}
+                          strokeDasharray="6 4"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      )}
+                    </svg>
+                    {lassoMode && (
+                      <span className="bg-background/90 absolute top-2 left-2 border px-2 py-0.5 text-[10px] font-medium">
+                        Tarik bebas untuk melingkari area
+                      </span>
+                    )}
+                    <span className="bg-background/90 text-muted-foreground absolute inset-x-0 bottom-0 mx-auto w-fit border px-2 py-0.5 text-[10px]">
+                      Hasil saat ini · pilih aksi pindai ulang di panel kanan
+                    </span>
+                    {scanBusy && (
+                      <div className="bg-background/70 absolute inset-0 flex items-center justify-center gap-2 text-xs">
+                        <Loader2 className="size-4 animate-spin" /> Memindai...
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -2189,7 +3117,7 @@ export default function MaskEditor({
                 {deletedCount > 0 ? ` · ${deletedCount} dihapus` : ""}
               </span>
             </>
-          ) : (
+          ) : tab === "text" ? (
             <>
               <span>Klik kotak untuk ubah isi/font · geser untuk pindah · handle untuk ukuran.</span>
               {maskDirty && (
@@ -2202,6 +3130,24 @@ export default function MaskEditor({
                 {deletedTextCount > 0 ? ` · ${deletedTextCount} dihapus` : ""} · {font.family}
                 {font.bold ? " Bold" : ""} · {font.scale}%
               </span>
+            </>
+          ) : (
+            <>
+              <span>
+                Aksi:{" "}
+                {scanAction === "mask"
+                  ? "deteksi ulang mask"
+                  : scanAction === "translate"
+                    ? "terjemah ulang"
+                    : "OCR + terjemahan baru"}
+                . Hasil muncul sebagai pembanding Sebelum/Sesudah.
+              </span>
+              {candidate && (
+                <span className="ml-auto tabular-nums">
+                  {pickedText.size}/{candidate.diff.texts.length} teks ·{" "}
+                  {pickedMask.size}/{candidate.diff.masks.length} mask dipilih
+                </span>
+              )}
             </>
           )}
         </div>
@@ -2219,19 +3165,521 @@ export default function MaskEditor({
           <p className="text-muted-foreground text-xs">
             {tab === "text"
               ? "Pratinjau font & posisi teks. Terapkan untuk merender hasil akhir."
-              : "Preview langsung memakai warna kertas; Terapkan menyimpan ke hasil & ZIP/PDF."}
+              : tab === "scan"
+                ? "Pindai ulang memakai pembanding. Pilih aksi di ribbon, lalu Terapkan/Batal di panel kanan."
+                : "Preview langsung memakai warna kertas; Terapkan menyimpan ke hasil & ZIP/PDF."}
           </p>
           <div className="ml-auto flex gap-2">
-            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
-              Batal
-            </Button>
-            <Button type="button" onClick={() => void apply()} disabled={!data || saving}>
-              {saving && <Loader2 className="animate-spin" />}
-              {saving ? "Merender..." : "Terapkan"}
-            </Button>
+            {tab === "scan" ? (
+              <Button type="button" variant="outline" onClick={requestClose} disabled={saving}>
+                Tutup
+              </Button>
+            ) : (
+              <>
+                <Button type="button" variant="outline" onClick={requestClose} disabled={saving}>
+                  Batal
+                </Button>
+                <Button type="button" onClick={() => void apply()} disabled={!data || saving}>
+                  {saving && <Loader2 className="animate-spin" />}
+                  {saving ? "Merender..." : "Terapkan"}
+                </Button>
+              </>
+            )}
           </div>
         </footer>
       </div>
+
+      {tab === "text" && selectedTextBox && toolbarPos && pendingNav === null && !closing && (
+        <div
+          className="bg-background fixed z-[70] flex max-w-[calc(100vw-1rem)] items-center gap-1.5 overflow-x-auto border-2 p-1.5 shadow-xl"
+          style={{ left: toolbarPos.left, top: toolbarPos.top }}
+          onPointerDown={(event) => event.stopPropagation()}
+          role="toolbar"
+          aria-label="Font kotak terpilih"
+        >
+          <span className="text-muted-foreground px-1 text-[9px] font-semibold uppercase tracking-wide">
+            Font kotak
+          </span>
+          <select
+            value={selectedTextBox.fontFamily ?? ""}
+            onChange={(event) =>
+              updateSelectedFont({ fontFamily: event.target.value || null, fontCap: null })
+            }
+            onFocus={beginFontEdit}
+            onBlur={endFontEdit}
+            className="border-input bg-background h-7 w-36 rounded-md border px-1.5 text-[11px]"
+            aria-label="Font family kotak"
+          >
+            <option value="">Ikut halaman</option>
+            {FONT_FAMILIES.map((family) => (
+              <option key={family} value={family}>
+                {family}
+              </option>
+            ))}
+          </select>
+          <select
+            value={
+              selectedTextBox.fontBold === null
+                ? ""
+                : selectedTextBox.fontBold
+                  ? "bold"
+                  : "normal"
+            }
+            onChange={(event) => {
+              const value = event.target.value;
+              updateSelectedFont({
+                fontBold: value === "" ? null : value === "bold",
+                fontCap: null,
+              });
+            }}
+            onFocus={beginFontEdit}
+            onBlur={endFontEdit}
+            className="border-input bg-background h-7 w-28 rounded-md border px-1.5 text-[11px]"
+            aria-label="Gaya font kotak"
+          >
+            <option value="">Ikut halaman</option>
+            <option value="normal">Normal</option>
+            <option value="bold">Bold</option>
+          </select>
+          <input
+            type="number"
+            min={MIN_BOX_SCALE}
+            max={MAX_BOX_SCALE}
+            step={5}
+            value={selectedTextBox.scale}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (!Number.isFinite(value)) return;
+              updateSelectedFont({
+                scale: clamp(Math.round(value), MIN_BOX_SCALE, MAX_BOX_SCALE),
+                fontCap: null,
+              });
+            }}
+            onFocus={beginFontEdit}
+            onBlur={endFontEdit}
+            className="border-input bg-background h-7 w-16 rounded-md border px-1.5 text-[11px] tabular-nums"
+            aria-label="Ukuran font kotak (persen)"
+          />
+          <span className="text-muted-foreground text-[10px]">%</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="Ikut font halaman"
+            aria-label="Ikut font halaman"
+            onClick={resetSelectedFont}
+          >
+            <RotateCcw />
+          </Button>
+        </div>
+      )}
+
+      {tab === "scan" && data && (
+        <aside
+          className={`bg-background absolute inset-x-2 bottom-2 z-30 max-h-[58vh] overflow-y-auto border-2 p-3 shadow-xl lg:right-4 lg:left-auto lg:w-[20rem] lg:max-h-[94vh] ${
+            fullscreen
+              ? "lg:top-4 lg:translate-y-0"
+              : "lg:top-1/2 lg:-translate-y-1/2"
+          }`}
+          aria-label="Panel pindai ulang"
+        >
+          {!candidate ? (
+            <div className="space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold">Pindai ulang</h3>
+                <p className="text-muted-foreground mt-0.5 text-[11px] leading-relaxed">
+                  {scanAction === "mask"
+                    ? "Deteksi ulang area mask memakai model bubble di bawah. Teks terjemahan tidak berubah."
+                    : scanAction === "translate"
+                      ? "Terjemahkan ulang teks sumber OCR yang tersimpan. Posisi kotak, skala, dan mask tetap."
+                      : "Baca ulang gambar asli dengan engine OCR + model bubble, lalu terjemahkan. Kandidat teks & mask baru."}
+                </p>
+              </div>
+
+              {hasChanges && (
+                <p className="text-[11px] leading-relaxed text-amber-600">
+                  Draf belum diterapkan tidak dipakai sebagai acuan. Pindai ulang
+                  memakai hasil tersimpan terakhir; Terapkan hasil pindai akan
+                  membuang draf halaman ini.
+                </p>
+              )}
+
+              {scanAction !== "translate" && (
+                <label className="block space-y-1">
+                  <span className="text-muted-foreground block text-[10px] uppercase tracking-wide">
+                    Model bubble
+                  </span>
+                  <select
+                    value={scanSettings.bubble}
+                    onChange={(event) =>
+                      setScanSettings({ ...scanSettings, bubble: event.target.value })
+                    }
+                    disabled={scanBusy}
+                    className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+                  >
+                    <option value="ogkalu">Ogkalu (barat + manga)</option>
+                    <option value="psimera">Psimera (manga)</option>
+                    <option value="google">Google Vision (region)</option>
+                    <option value="0">Tanpa bubble (full-page)</option>
+                  </select>
+                </label>
+              )}
+
+              {scanAction !== "mask" && (
+                <>
+                  {scanAction === "ocr_translate" && (
+                    <label className="block space-y-1">
+                      <span className="text-muted-foreground block text-[10px] uppercase tracking-wide">
+                        Mesin OCR
+                      </span>
+                      <select
+                        value={scanSettings.ocrEngine}
+                        onChange={(event) =>
+                          setScanSettings({ ...scanSettings, ocrEngine: event.target.value })
+                        }
+                        disabled={scanBusy}
+                        className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+                      >
+                        <option value="tesseract">Tesseract</option>
+                        <option value="vision_llm">Vision LLM</option>
+                        <option value="google_vision">Google Vision</option>
+                      </select>
+                    </label>
+                  )}
+
+                  <label className="block space-y-1">
+                    <span className="text-muted-foreground block text-[10px] uppercase tracking-wide">
+                      Provider terjemahan
+                    </span>
+                    <select
+                      value={scanSettings.provider}
+                      onChange={(event) =>
+                        setScanSettings({ ...scanSettings, provider: event.target.value })
+                      }
+                      disabled={scanBusy}
+                      className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+                    >
+                      <option value="auto">auto (gratis)</option>
+                      <option value="openrouter">openrouter</option>
+                      <option value="opencode">opencode (legacy)</option>
+                    </select>
+                  </label>
+
+                  <div className="text-muted-foreground flex items-center gap-1 text-[11px]">
+                    Bahasa: {LANG_LABEL[scanSettings.sourceLang]} →{" "}
+                    {LANG_LABEL[scanSettings.targetLang]} (mengikuti job)
+                  </div>
+
+                  {needsOpenRouterKey && (
+                    <label className="block space-y-1">
+                      <span className="text-muted-foreground block text-[10px] uppercase tracking-wide">
+                        API key OpenRouter
+                      </span>
+                      <input
+                        type="password"
+                        value={apiKeyInput}
+                        onChange={(event) => setApiKeyInput(event.target.value)}
+                        disabled={scanBusy}
+                        placeholder="sk-or-v1-..."
+                        className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+                      />
+                    </label>
+                  )}
+                </>
+              )}
+
+              {needsGoogleKey && (
+                <label className="block space-y-1">
+                  <span className="text-muted-foreground block text-[10px] uppercase tracking-wide">
+                    API key Google Vision
+                  </span>
+                  <input
+                    type="password"
+                    value={googleKeyInput}
+                    onChange={(event) => setGoogleKeyInput(event.target.value)}
+                    disabled={scanBusy}
+                    placeholder="AIza..."
+                    className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+                  />
+                </label>
+              )}
+
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => void runRescan()}
+                disabled={scanBlocked}
+              >
+                {scanBusy && <Loader2 className="animate-spin" />}
+                {scanBusy ? "Memindai..." : "Buat pembanding"}
+              </Button>
+
+              <div className="space-y-2 border-t pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide">
+                    Circle to search
+                  </span>
+                  {lassoBox && (
+                    <Badge variant="outline" className="shrink-0 text-[9px] tabular-nums">
+                      {Math.round(lassoBox.x1 - lassoBox.x0)}×
+                      {Math.round(lassoBox.y1 - lassoBox.y0)} px
+                    </Badge>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant={lassoMode ? "default" : "outline"}
+                  className="w-full"
+                  onClick={toggleLasso}
+                  disabled={scanBusy || Boolean(candidate)}
+                >
+                  <Lasso />
+                  {lassoMode
+                    ? "Batalkan lasso"
+                    : lassoPoints.length
+                      ? "Ulangi lasso"
+                      : "Lingkari area"}
+                </Button>
+                {lassoMode ? (
+                  <p className="text-muted-foreground text-[11px] leading-relaxed">
+                    Tarik bebas di kanvas untuk melingkari area yang mau diubah.
+                    Tanpa lasso, pindai ulang memakai seluruh halaman.
+                  </p>
+                ) : lassoPoints.length ? (
+                  <div className="flex items-center gap-2">
+                    <p className="text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed">
+                      Area lasso dipakai untuk aksi berikutnya.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={clearLasso}
+                      disabled={scanBusy || Boolean(candidate)}
+                    >
+                      Hapus area
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={retryLasso}
+                      disabled={scanBusy || Boolean(candidate)}
+                    >
+                      Ulangi
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-[11px] leading-relaxed">
+                    Opsional: lingkari satu bubble/teks agar rescan hanya mengubah
+                    area itu. Bubble yang tersentuh diikutkan utuh.
+                  </p>
+                )}
+              </div>
+
+              {scanError && <p className="text-destructive text-[11px] leading-relaxed">{scanError}</p>}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold">Pembanding</h3>
+                  <p className="text-muted-foreground mt-0.5 text-[11px]">
+                    {candidateRows} perubahan · {candidate.via} · {candidate.bubbleCount} bubble
+                  </p>
+                </div>
+                <Badge variant="outline" className="shrink-0 text-[9px]">
+                  {candidate.action === "mask"
+                    ? "Mask"
+                    : candidate.action === "translate"
+                      ? "Terjemah"
+                      : "OCR + Terjemah"}
+                </Badge>
+              </div>
+
+              <p className="text-muted-foreground text-[11px] leading-relaxed">
+                Centang item yang memakai hasil baru. Item yang tidak dicentang
+                mempertahankan hasil lama. Gambar kanan menampilkan kandidat penuh.
+              </p>
+
+              {candidate.diff.texts.length > 0 && (
+                <section className="space-y-1">
+                  <h4 className="text-[10px] font-semibold uppercase tracking-wide">
+                    Teks ({candidate.diff.texts.length})
+                  </h4>
+                  {candidate.diff.texts.map((row) => (
+                    <label
+                      key={row.id}
+                      className="flex gap-2 border-b py-1.5 text-[11px] leading-snug"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={pickedText.has(row.id)}
+                        onChange={() => togglePicked("text", row.id)}
+                        disabled={scanBusy}
+                        className="accent-primary mt-0.5"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1">
+                          <Badge variant="outline" className="shrink-0 text-[9px]">
+                            {DIFF_LABEL[row.kind]}
+                          </Badge>
+                          <span className="text-muted-foreground truncate" title={row.source}>
+                            {row.source || "(tanpa teks sumber)"}
+                          </span>
+                        </span>
+                        {row.kind === "changed" ? (
+                          <span className="mt-0.5 block">
+                            <span className="text-muted-foreground line-through">{row.oldText}</span>
+                            <span className="mx-1">→</span>
+                            <span>{row.newText}</span>
+                          </span>
+                        ) : row.kind === "added" ? (
+                          <span className="mt-0.5 block">{row.newText}</span>
+                        ) : (
+                          <span className="text-muted-foreground mt-0.5 block line-through">
+                            {row.oldText}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
+                </section>
+              )}
+
+              {candidate.diff.masks.length > 0 && (
+                <section className="space-y-1">
+                  <h4 className="text-[10px] font-semibold uppercase tracking-wide">
+                    Mask ({candidate.diff.masks.length})
+                  </h4>
+                  {candidate.diff.masks.map((row) => (
+                    <label
+                      key={row.id}
+                      className="flex items-center gap-2 border-b py-1.5 text-[11px]"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={pickedMask.has(row.id)}
+                        onChange={() => togglePicked("mask", row.id)}
+                        disabled={scanBusy}
+                        className="accent-primary"
+                      />
+                      <Badge variant="outline" className="shrink-0 text-[9px]">
+                        {DIFF_LABEL[row.kind]}
+                      </Badge>
+                      <span className="text-muted-foreground truncate tabular-nums">
+                        {Math.round(row.bbox.x1 - row.bbox.x0)}×
+                        {Math.round(row.bbox.y1 - row.bbox.y0)} px @{" "}
+                        {Math.round(row.bbox.x0)},{Math.round(row.bbox.y0)}
+                      </span>
+                    </label>
+                  ))}
+                </section>
+              )}
+
+              {candidateRows === 0 && (
+                <p className="text-muted-foreground text-[11px]">
+                  Tidak ada perubahan terdeteksi. Batal untuk kembali.
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={cancelCandidate}
+                  disabled={scanBusy}
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void applyCandidate()}
+                  disabled={scanBusy || candidateRows === 0}
+                >
+                  {scanBusy && <Loader2 className="animate-spin" />}
+                  Terapkan
+                </Button>
+              </div>
+              {scanError && <p className="text-destructive text-[11px] leading-relaxed">{scanError}</p>}
+            </div>
+          )}
+        </aside>
+      )}
+
+      {pendingNav !== null && (
+        <div
+          className={`fixed inset-0 z-[60] flex items-center justify-center p-4 ${
+            navClosing
+              ? "animate-out fade-out-0 duration-150"
+              : "animate-in fade-in-0 duration-200"
+          }`}
+        >
+          <button
+            type="button"
+            aria-label="Batal pindah halaman"
+            onClick={() => closeNavThen()}
+            className="absolute inset-0 bg-black/60"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="nav-confirm-title"
+            className={`bg-background relative w-full max-w-sm border-2 p-5 ${
+              navClosing
+                ? "animate-out fade-out-0 zoom-out-95 duration-150"
+                : "animate-in fade-in-0 zoom-in-95 duration-200"
+            }`}
+          >
+            <h3 id="nav-confirm-title" className="text-sm font-semibold">
+              Simpan perubahan dulu?
+            </h3>
+            <p className="text-muted-foreground mt-2 text-xs leading-relaxed">
+              Ada perubahan yang belum diterapkan di halaman ini. Pindah halaman
+              tanpa menyimpan akan menyisakan draf lokal.
+            </p>
+            {saveError && (
+              <p className="text-destructive mt-2 text-xs">{saveError}</p>
+            )}
+            <div className="mt-5 grid gap-2">
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => closeNavThen()}
+                  disabled={saving}
+                  className="h-10 w-full text-xs"
+                >
+                  Batal
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    const target = pendingNav;
+                    if (target === null) return;
+                    closeNavThen(() => switchPage(target));
+                  }}
+                  disabled={saving}
+                  className="h-10 w-full text-xs"
+                >
+                  Lanjut tanpa simpan
+                </Button>
+              </div>
+              <Button
+                type="button"
+                onClick={() => void saveAndGo()}
+                disabled={saving}
+                className="h-10 w-full"
+              >
+                {saving && <Loader2 className="animate-spin" />}
+                {saving ? "Menyimpan..." : "Simpan & lanjut"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { getJob } from "@/lib/jobs";
 import { buildJobArchives } from "@/lib/jobFiles";
-import { normalizeFont } from "@/lib/fonts";
+import { FONT_FAMILIES, normalizeFont } from "@/lib/fonts";
 import type { AutoMaskEdit, BrushPoint, BrushStroke, TextBoxOverride } from "@/lib/overlay";
 import { renderStoredPage } from "@/lib/renderPage";
 import { readRenderStore, sourceFilePath, writeRenderStore } from "@/lib/renderStore";
@@ -40,6 +40,10 @@ interface RawText {
   h?: unknown;
   deleted?: unknown;
   text?: unknown;
+  scale?: unknown;
+  fontFamily?: unknown;
+  fontBold?: unknown;
+  fontCap?: unknown;
 }
 
 function number(value: unknown): number | null {
@@ -181,6 +185,19 @@ export async function POST(
       const height = Math.min(Math.max(0, h), page.height - top);
       if (width < MIN_TEXT_SIDE || height < MIN_TEXT_SIDE) continue;
       const text = typeof raw?.text === "string" ? raw.text.slice(0, 2000) : undefined;
+      const scaleRaw = number(raw?.scale);
+      const scale =
+        scaleRaw !== null && scaleRaw > 0
+          ? clamp(Math.round(scaleRaw), 20, 300)
+          : undefined;
+      const fontFamily =
+        typeof raw?.fontFamily === "string" && (FONT_FAMILIES as readonly string[]).includes(raw.fontFamily)
+          ? raw.fontFamily
+          : undefined;
+      const fontBold = typeof raw?.fontBold === "boolean" ? raw.fontBold : undefined;
+      const capRaw = number(raw?.fontCap);
+      const fontCap =
+        capRaw !== null && capRaw > 0 ? clamp(Math.round(capRaw), 1, 500) : undefined;
       overrides.push({
         index,
         x: left,
@@ -188,6 +205,10 @@ export async function POST(
         w: width,
         h: height,
         ...(text !== undefined ? { text } : {}),
+        ...(scale !== undefined && scale !== 100 ? { scale } : {}),
+        ...(fontFamily ? { fontFamily } : {}),
+        ...(fontBold !== undefined ? { fontBold } : {}),
+        ...(fontCap !== undefined ? { fontCap } : {}),
         ...(raw?.deleted === true ? { deleted: true } : {}),
       });
     }

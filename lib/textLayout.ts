@@ -1,6 +1,6 @@
 // Layout teks terjemahan di dalam box. Dipakai server (overlay) dan client
 // (pratinjau workspace teks) agar hasil wrap & ukuran huruf sama persis.
-export const MIN_FONT = 10;
+export const MIN_FONT = 4;
 export const START_FONT = 22; // sengaja kecil agar teks muat rapi di dalam elips
 
 // CJK = lebar penuh (≈1em), latin ≈0.55em. Termasuk tanda baca CJK/fullwidth
@@ -48,41 +48,47 @@ function tokenize(text: string): string[] {
 }
 
 // Bungkus teks agar muat dalam lebar box pada font tertentu.
+// Baris baru (\n) dari editor inline dipertahankan sebagai hard break.
 export function wrapText(text: string, boxW: number, fontSize: number): string[] {
   const maxWidth = Math.max(fontSize, boxW);
-  const tokens = tokenize(text);
-  if (!tokens.length) return [""];
   const lines: string[] = [];
-  let cur = "";
-  for (const token of tokens) {
-    // CJK bertemu CJK = tanpa spasi; selain itu beri spasi antar token.
-    const last = cur.slice(-1);
-    const sep = cur && !(isCjk(last) && isCjk(token[0])) ? " " : "";
-    const candidate = cur + sep + token;
-    if (measureLine(candidate, fontSize) <= maxWidth) {
-      cur = candidate;
+  for (const paragraph of text.split(/\r?\n/)) {
+    const tokens = tokenize(paragraph);
+    if (!tokens.length) {
+      lines.push("");
       continue;
     }
-    if (cur) {
-      lines.push(cur);
-      cur = "";
-    }
-    // Token tunggal (kata latin panjang) masih bisa melebihi lebar box.
-    if (measureLine(token, fontSize) <= maxWidth) {
-      cur = token;
-      continue;
-    }
-    let piece = "";
-    for (const ch of token) {
-      if (piece && measureLine(piece + ch, fontSize) > maxWidth) {
-        lines.push(piece);
-        piece = "";
+    let cur = "";
+    for (const token of tokens) {
+      // CJK bertemu CJK = tanpa spasi; selain itu beri spasi antar token.
+      const last = cur.slice(-1);
+      const sep = cur && !(isCjk(last) && isCjk(token[0])) ? " " : "";
+      const candidate = cur + sep + token;
+      if (measureLine(candidate, fontSize) <= maxWidth) {
+        cur = candidate;
+        continue;
       }
-      piece += ch;
+      if (cur) {
+        lines.push(cur);
+        cur = "";
+      }
+      // Token tunggal (kata latin panjang) masih bisa melebihi lebar box.
+      if (measureLine(token, fontSize) <= maxWidth) {
+        cur = token;
+        continue;
+      }
+      let piece = "";
+      for (const ch of token) {
+        if (piece && measureLine(piece + ch, fontSize) > maxWidth) {
+          lines.push(piece);
+          piece = "";
+        }
+        piece += ch;
+      }
+      cur = piece;
     }
-    cur = piece;
+    if (cur) lines.push(cur);
   }
-  if (cur) lines.push(cur);
   return lines.length ? lines : [""];
 }
 
@@ -94,21 +100,28 @@ export interface FitTextResult {
 
 // Cari font terbesar yang muat (lebar & tinggi). `scale` (%) menaikkan /
 // menurunkan batas atas-bawah agar slider font benar-benar berpengaruh.
+// `maxFont` (px) mencegah font membesar saat bingkai diperbesar dari sisi.
 export function fitText(
   text: string,
   boxW: number,
   boxH: number,
   scale = 100,
+  maxFont?: number,
 ): FitTextResult {
-  const start = Math.max(6, Math.round(START_FONT * (scale / 100)));
-  const min = Math.max(5, Math.round(MIN_FONT * (scale / 100)));
-  for (let fs = start; fs >= min; fs -= 2) {
+  const natural = Math.max(1, Math.round(START_FONT * (scale / 100)));
+  const cap =
+    Number.isFinite(maxFont) && (maxFont as number) > 0
+      ? Math.max(1, Math.min(natural, Math.floor(maxFont as number)))
+      : natural;
+  const min = Math.max(1, Math.round(MIN_FONT * (scale / 100)));
+  const lower = Math.min(min, cap);
+  for (let fs = cap; fs >= lower; fs -= 1) {
     const lines = wrapText(text, boxW, fs);
     const lineH = fs * 1.25;
     const totalH = lines.length * lineH;
     const totalW = Math.max(...lines.map((l) => measureLine(l, fs)), 1);
     if (totalH <= boxH && totalW <= boxW) return { fs, lines, lineH };
   }
-  const fs = min;
+  const fs = lower;
   return { fs, lines: wrapText(text, boxW, fs), lineH: fs * 1.25 };
 }
