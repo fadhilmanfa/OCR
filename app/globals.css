@@ -145,6 +145,20 @@
   -webkit-mask-image: linear-gradient(to bottom, black, transparent);
 }
 
+/* Sonner: semua sudut tanpa radius dan deskripsi ikut warna teks toast
+   (mendukung mode invert: gelap = putih, terang = hitam). */
+[data-sonner-toast][data-styled="true"] {
+  border-radius: 0 !important;
+}
+[data-sonner-toast][data-styled="true"] [data-button],
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+  border-radius: 0 !important;
+}
+[data-sonner-toast][data-styled="true"] [data-description] {
+  color: inherit !important;
+  opacity: 0.72;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -156,15 +170,21 @@
   }
 }
 
-/* Deskripsi opsi hanya tampil di dalam dropdown, disembunyikan di trigger. */
-[data-slot="select-trigger"] .select-item-desc {
-  display: none;
-}
-
 @theme inline {
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-drop-flash: drop-flash 0.4s ease-out both;
 
+  @keyframes drop-flash {
+    from {
+      opacity: 0.45;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(1.015);
+    }
+  }
   @keyframes accordion-down {
     from {
       height: 0;

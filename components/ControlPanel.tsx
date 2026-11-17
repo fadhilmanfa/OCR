@@ -11,9 +11,10 @@ import {
   Info,
   Languages,
   Loader2,
+  Settings2,
 } from "lucide-react";
 import type { ProcessingSettings } from "./useJobSession";
-import { APP_LANGS, LANG_LABEL, LANG_SHORT, type AppLang } from "@/lib/languages";
+import { APP_LANGS, LANG_LABEL, type AppLang } from "@/lib/languages";
 import type { CleanMode, ProcessMode } from "@/lib/cleanMode";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,60 +39,6 @@ import {
 } from "@/components/ui/tooltip";
 import { OsBadges } from "@/components/OsIcons";
 import { cn } from "@/lib/utils";
-
-const PROVIDER_LABEL: Record<string, string> = {
-  auto: "Otomatis",
-  openrouter: "OpenRouter",
-  opencode: "OpenCode",
-};
-
-const BUBBLE_LABEL: Record<string, string> = {
-  ogkalu: "Ogkalu",
-  psimera: "Psimera",
-  google: "Google",
-  "0": "Tanpa deteksi",
-};
-
-const OCR_LABEL: Record<string, string> = {
-  tesseract: "Tesseract",
-  comics_text_plus: "Comics Text Plus",
-  vision_llm: "Vision LLM",
-  google_vision: "Google Vision",
-};
-
-const CLEAN_LABEL: Record<CleanMode, string> = {
-  text: "Per baris teks",
-  bubble: "Warna bubble",
-  white: "Putih",
-  none: "Tanpa hapus",
-};
-
-function FieldLabel({
-  id,
-  num,
-  children,
-}: {
-  id: string;
-  num: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-baseline gap-2">
-      <span
-        aria-hidden="true"
-        className="text-muted-foreground font-mono text-[10px] tracking-[0.14em]"
-      >
-        [{num}]
-      </span>
-      <h3
-        id={id}
-        className="font-mono text-[10px] font-medium uppercase tracking-[0.18em]"
-      >
-        {children}
-      </h3>
-    </div>
-  );
-}
 
 function InfoHint({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -163,11 +110,6 @@ export default function ControlPanel({
     fileCount > 0 && !locked && !cleanBubbleInvalid && !sameLang;
   const percent = Math.min(100, Math.max(0, Math.round(progressPercent)));
 
-  const shortPair = `${LANG_SHORT[sourceLang]} → ${LANG_SHORT[targetLang]}`;
-  const panelSummary = cleanOnly
-    ? `Mode bersih · ${BUBBLE_LABEL[bubble] ?? bubble}`
-    : `${shortPair} · ${OCR_LABEL[ocrEngine] ?? ocrEngine}`;
-
   const ctaLabel = uploading
     ? "Mengunggah…"
     : busy
@@ -176,55 +118,17 @@ export default function ControlPanel({
         ? "Bersihkan bubble"
         : "Proses komik";
 
-  let helper: string;
-  if (busy) {
-    helper = "Halaman diproses satu per satu. Panel tetap bisa dibuka.";
-  } else if (uploading) {
-    helper = "File sedang dikirim ke server.";
-  } else if (hasResult) {
-    helper = "Hasil siap. Unduh di workspace, atau mulai baru untuk memproses lagi.";
-  } else if (cleanBubbleInvalid) {
-    helper = "Mode bersih butuh deteksi bubble Ogkalu atau Psimera.";
-  } else if (sameLang) {
-    helper = "Bahasa sumber dan target sama — pilih pasangan berbeda.";
-  } else if (fileCount === 0) {
-    helper = "Belum ada file. Tambahkan halaman komik di workspace.";
-  } else {
-    helper = `${fileCount} file · ${shortPair} · ${OCR_LABEL[ocrEngine] ?? ocrEngine} · ${CLEAN_LABEL[cleanMode]}`;
-  }
-
   return (
     <aside aria-labelledby="panel-title" className="min-w-0 lg:sticky lg:top-20">
       <div className="panel overflow-hidden">
-        <div className="bg-muted/30 flex items-center justify-between gap-3 border-b px-5 py-4">
-          <div className="min-w-0">
-            <h2 id="panel-title" className="font-mono text-[11px] font-medium uppercase tracking-[0.18em]">
-              Panel kendali
-            </h2>
-            <p className="text-muted-foreground mt-1 truncate font-mono text-[10px] uppercase tracking-[0.14em]">
-              {panelSummary}
-            </p>
-          </div>
-          <span
-            aria-hidden="true"
-            className={cn(
-              "size-2 shrink-0 border border-current",
-              busy && "bg-foreground animate-pulse",
-              uploading && "bg-foreground animate-pulse",
-              !busy && !uploading && hasResult && "bg-foreground",
-              !busy && !uploading && !hasResult && "text-muted-foreground"
-            )}
-          />
-          <span className="sr-only">
-            {busy || uploading ? "Sedang memproses" : hasResult ? "Hasil siap" : "Siap"}
-          </span>
+        <div className="bg-muted/30 border-b px-5 py-4">
+          <h2 id="panel-title" className="font-mono text-[11px] font-medium uppercase tracking-[0.18em]">
+            Panel kendali
+          </h2>
         </div>
 
         <div className="divide-y">
-          <section aria-labelledby="panel-lang" className="space-y-3 p-5">
-            <FieldLabel id="panel-lang" num="01">
-              Bahasa
-            </FieldLabel>
+          <section aria-label="Bahasa" className="space-y-3 p-5">
             <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-2">
               <div className="min-w-0 space-y-1.5">
                 <Label
@@ -293,22 +197,22 @@ export default function ControlPanel({
                 </Select>
               </div>
             </div>
-            {cleanOnly && (
-              <p className="text-muted-foreground text-[11px] leading-relaxed">
-                Mode bersih tidak memakai bahasa sumber maupun target.
-              </p>
-            )}
           </section>
 
-          <section aria-labelledby="panel-mode" className="space-y-3 p-5">
-            <FieldLabel id="panel-mode" num="02">
-              Mode
-            </FieldLabel>
+          <section aria-label="Mode" className="space-y-3 p-5">
             <div
               role="group"
               aria-label="Mode proses"
-              className="bg-muted/40 grid grid-cols-2 gap-1 border p-1"
+              className="bg-muted/40 relative grid grid-cols-2 gap-1 border p-1"
             >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "bg-foreground pointer-events-none absolute top-1 bottom-1 left-1 w-[calc(50%_-_0.375rem)] transition-[translate,opacity] duration-200 ease-out",
+                  cleanOnly ? "translate-x-[calc(100%_+_0.25rem)]" : "translate-x-0",
+                  locked && "opacity-50"
+                )}
+              />
               {(
                 [
                   { value: "translate", label: "Terjemah", icon: Languages },
@@ -325,9 +229,9 @@ export default function ControlPanel({
                     onClick={() => patch({ mode: option.value as ProcessMode })}
                     disabled={locked}
                     className={cn(
-                      "flex h-9 items-center justify-center gap-1.5 text-xs font-medium transition-colors disabled:opacity-50",
+                      "relative z-10 flex h-9 items-center justify-center gap-1.5 text-xs font-medium transition-colors disabled:opacity-50",
                       active
-                        ? "bg-foreground text-background font-semibold"
+                        ? "text-background font-semibold"
                         : "text-muted-foreground hover:text-foreground"
                     )}
                   >
@@ -337,34 +241,22 @@ export default function ControlPanel({
                 );
               })}
             </div>
-            <p className="text-muted-foreground text-[11px] leading-relaxed">
-              {cleanOnly
-                ? "Timpa seluruh bubble tanpa OCR dan terjemahan, untuk mengecek coverage."
-                : "OCR → terjemah → timpa bubble → tempel teks terjemahan."}
-            </p>
           </section>
 
           <div>
             <Accordion type="single" collapsible>
               <AccordionItem value="advanced" className="border-none">
-                <AccordionTrigger className="px-5 py-4 text-xs hover:no-underline">
-                  <span className="flex items-baseline gap-2 text-left">
-                    <span
+                <AccordionTrigger className="px-5 py-4 hover:no-underline">
+                  <span className="flex items-center gap-2 text-left">
+                    <Settings2
                       aria-hidden="true"
-                      className="text-muted-foreground font-mono text-[10px] tracking-[0.14em]"
-                    >
-                      [03]
-                    </span>
+                      className="text-muted-foreground size-4"
+                    />
                     <span className="font-mono text-[10px] font-medium uppercase tracking-[0.18em]">
                       Pengaturan lanjutan
                     </span>
                   </span>
                 </AccordionTrigger>
-                <p className="text-muted-foreground -mt-1 px-5 pb-4 font-mono text-[10px] leading-relaxed uppercase tracking-[0.1em]">
-                  {PROVIDER_LABEL[provider] ?? provider} ·{" "}
-                  {BUBBLE_LABEL[bubble] ?? bubble} ·{" "}
-                  {OCR_LABEL[ocrEngine] ?? ocrEngine} · {CLEAN_LABEL[cleanMode]}
-                </p>
                 <AccordionContent className="px-5">
                   <div className="space-y-5">
                     <div className="space-y-1.5">
@@ -384,37 +276,22 @@ export default function ControlPanel({
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="auto">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Otomatis</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Google gratis, lalu MyMemory bila perlu.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Otomatis
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                           <SelectItem value="openrouter">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>OpenRouter</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Terjemahan LLM dengan API key.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              OpenRouter
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                           <SelectItem value="opencode">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>OpenCode</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Memakai server OpenCode lokal.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              OpenCode
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                         </SelectContent>
                       </Select>
@@ -442,48 +319,28 @@ export default function ControlPanel({
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="ogkalu">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Ogkalu</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Untuk komik barat dan manga.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Ogkalu
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                           <SelectItem value="psimera">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Psimera</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Khusus halaman manga.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Psimera
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                           <SelectItem value="google">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Google</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Dari blok teks Google Vision.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Google
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                           <SelectItem value="0">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Matikan</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                OCR seluruh halaman, tanpa deteksi.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Matikan
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                         </SelectContent>
                       </Select>
@@ -496,9 +353,8 @@ export default function ControlPanel({
                       >
                         Mesin OCR
                         <InfoHint label="Info mesin OCR">
-                          Baca apa tulisannya di dalam bubble (Tesseract, Comics
-                          Text Plus, Vision LLM, Google Vision). Output berupa
-                          teks + kotak kata.
+                          Baca apa tulisannya di dalam bubble (Tesseract, Vision
+                          LLM, Google Vision). Output berupa teks + kotak kata.
                         </InfoHint>
                       </Label>
                       <Select
@@ -514,57 +370,25 @@ export default function ControlPanel({
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="tesseract">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Tesseract</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Bawaan, tanpa API key.
-                              </div>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="comics_text_plus">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Comics Text Plus</span>
-                                <OsBadges mac={false} win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Perlu model lokal.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Tesseract
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                           <SelectItem value="vision_llm">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Vision LLM</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Perlu API key OpenRouter.
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Vision LLM
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                           <SelectItem value="google_vision">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <div className="flex items-center gap-3">
-                                <span>Google Vision</span>
-                                <OsBadges mac win />
-                              </div>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Perlu API key Google (berbayar).
-                              </div>
-                            </div>
+                            <span className="flex items-center gap-3">
+                              Google Vision
+                              <OsBadges mac win />
+                            </span>
                           </SelectItem>
                         </SelectContent>
                       </Select>
-                      {sourceLang !== "en" && ocrEngine === "comics_text_plus" && (
-                        <p className="text-muted-foreground text-[10px] leading-relaxed">
-                          comics_text_plus hanya akurat untuk Inggris — otomatis
-                          fallback ke Tesseract untuk {LANG_LABEL[sourceLang]}.
-                        </p>
-                      )}
                     </div>
 
                     <div className="space-y-1.5">
@@ -594,40 +418,10 @@ export default function ControlPanel({
                           <SelectValue placeholder="Pilih mode pembersih" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="text">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <span>Per baris teks</span>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Hanya baris OCR yang ditimpa; outline bubble
-                                tetap utuh.
-                              </div>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="bubble">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <span>Warna bubble</span>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Ikut warna kertas dari gambar, tanpa bercak
-                                putih.
-                              </div>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="white">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <span>Putih (lama)</span>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Mask putih solid, seperti versi sebelumnya.
-                              </div>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="none">
-                            <div className="flex min-w-0 flex-col gap-0.5">
-                              <span>Tanpa hapus</span>
-                              <div className="select-item-desc text-muted-foreground text-xs font-normal">
-                                Teks asli dibiarkan, untuk mengecek OCR.
-                              </div>
-                            </div>
-                          </SelectItem>
+                          <SelectItem value="text">Per baris teks</SelectItem>
+                          <SelectItem value="bubble">Warna bubble</SelectItem>
+                          <SelectItem value="white">Putih (lama)</SelectItem>
+                          <SelectItem value="none">Tanpa hapus</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -725,13 +519,6 @@ export default function ControlPanel({
                         </div>
                       </div>
                     )}
-
-                    {cleanOnly && (
-                      <p className="text-muted-foreground text-[10px] leading-relaxed">
-                        Mode bersih mengabaikan penerjemah, pengaturan bahasa,
-                        dan mesin OCR.
-                      </p>
-                    )}
                   </div>
                 </AccordionContent>
               </AccordionItem>
@@ -790,13 +577,6 @@ export default function ControlPanel({
               {ctaLabel}
             </Button>
           )}
-
-          <p
-            aria-live="polite"
-            className="text-muted-foreground text-center text-[11px] leading-relaxed"
-          >
-            {helper}
-          </p>
         </div>
       </div>
     </aside>
