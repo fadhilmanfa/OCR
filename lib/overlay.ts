@@ -1,20 +1,12 @@
 import sharp from "sharp";
 import type { BBox } from "./ocr";
 import { normalizeCleanMode, type CleanMode } from "./cleanMode";
+import { fontStack, normalizeFont, type FontChoice } from "./fonts";
+import { fitText } from "./textLayout";
 
 const PAD = 2; // untuk layout teks fallback (area baca, bukan mask)
 const MASK_INSET = 1; // mask DICUPET 1px dari box: box YOLO sudah memeluk
 // outline, expand (+PAD seperti dulu) justru memutihkan ilustrasi di luar.
-const MIN_FONT = 10;
-const START_FONT = 22; // sengaja kecil agar teks terjemahan muat rapi di dalam elips
-// Font pertama untuk gaya komik latin; sisanya fallback CJK (Mandarin)
-// supaya hanzi tetap tergambar di macOS/Windows/Linux.
-const FONT_FAMILY =
-  "'Comic Sans MS', 'Comic Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', sans-serif";
-// CJK = lebar penuh (≈1em), latin ≈0.55em. Dipakai untuk ukur & potong baris.
-// Termasuk tanda baca CJK/fullwidth agar tidak disisipi spasi ("你好，世界").
-const CJK_RE =
-  /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/;
 // Teks dimuat dalam persegi dalam elips (lebar ~0.72, tinggi ~0.70)
 // supaya tidak menyentuh garis bubble.
 const ELLIPSE_INNER_W = 0.72;
@@ -47,103 +39,6 @@ export interface OverlayItem {
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-// Bungkus teks agar muat dalam lebar box pada font tertentu.
-// Karakter CJK tidak memakai spasi, jadi tiap hanzi/kana boleh menjadi
-// titik potong sendiri; kata latin tetap utuh.
-function charWidth(ch: string, fontSize: number): number {
-  return CJK_RE.test(ch) ? fontSize : fontSize * 0.55;
-}
-
-function measure(text: string, fontSize: number): number {
-  let width = 0;
-  for (const ch of text) width += charWidth(ch, fontSize);
-  return width;
-}
-
-function isCjk(ch: string): boolean {
-  return CJK_RE.test(ch);
-}
-
-function tokenize(text: string): string[] {
-  const tokens: string[] = [];
-  let latin = "";
-  for (const ch of text) {
-    if (/\s/.test(ch)) {
-      if (latin) {
-        tokens.push(latin);
-        latin = "";
-      }
-      continue;
-    }
-    if (isCjk(ch)) {
-      if (latin) {
-        tokens.push(latin);
-        latin = "";
-      }
-      tokens.push(ch);
-    } else {
-      latin += ch;
-    }
-  }
-  if (latin) tokens.push(latin);
-  return tokens;
-}
-
-function wrap(text: string, boxW: number, fontSize: number): string[] {
-  const maxWidth = Math.max(fontSize, boxW);
-  const tokens = tokenize(text);
-  if (!tokens.length) return [""];
-  const lines: string[] = [];
-  let cur = "";
-  for (const token of tokens) {
-    // CJK bertemu CJK = tanpa spasi; selain itu beri spasi antar token.
-    const last = cur.slice(-1);
-    const sep = cur && !(isCjk(last) && isCjk(token[0])) ? " " : "";
-    const candidate = cur + sep + token;
-    if (measure(candidate, fontSize) <= maxWidth) {
-      cur = candidate;
-      continue;
-    }
-    if (cur) {
-      lines.push(cur);
-      cur = "";
-    }
-    // Token tunggal (kata latin panjang) masih bisa melebihi lebar box.
-    if (measure(token, fontSize) <= maxWidth) {
-      cur = token;
-      continue;
-    }
-    let piece = "";
-    for (const ch of token) {
-      if (piece && measure(piece + ch, fontSize) > maxWidth) {
-        lines.push(piece);
-        piece = "";
-      }
-      piece += ch;
-    }
-    cur = piece;
-  }
-  if (cur) lines.push(cur);
-  return lines.length ? lines : [""];
-}
-
-// Cari font terbesar yang muat (lebar & tinggi).
-function fitFont(
-  text: string,
-  boxW: number,
-  boxH: number,
-): { fs: number; lines: string[]; lineH: number } {
-  for (let fs = START_FONT; fs >= MIN_FONT; fs -= 2) {
-    const lines = wrap(text, boxW, fs);
-    const lineH = fs * 1.25;
-    const totalH = lines.length * lineH;
-    const totalW = Math.max(...lines.map((l) => measure(l, fs)), 1);
-    if (totalH <= boxH && totalW <= boxW) return { fs, lines, lineH };
-  }
-  const fs = MIN_FONT;
-  return { fs, lines: wrap(text, boxW, fs), lineH: fs * 1.25 };
 }
 
 function validPolygon(poly: OverlayPolygonPoint[] | undefined): poly is OverlayPolygonPoint[] {
@@ -266,6 +161,67 @@ function textBox(it: OverlayItem, W: number, H: number): { x: number; y: number;
   return { x, y, w, h };
 }
 
+// Posisi/ukuran kotak teks hasil geser/resize user di workspace teks.
+export interface TextBoxOverride {
+  index: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** true = teks terjemahan item ini tidak digambar (dihapus user). */
+  deleted?: boolean;
+  /** Isi teks pengganti hasil edit user (opsional). */
+  text?: string;
+}
+
+export interface ResolvedTextBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function defaultTextBox(it: OverlayItem, W: number, H: number): ResolvedTextBox {
+  return textBox(it, W, H);
+}
+
+// Box efektif: override user dipakai PERSIS (tanpa inset/expand), hanya
+// di-clamp ke batas halaman. Tanpa override = box otomatis.
+export function textBoxFor(
+  it: OverlayItem,
+  override: TextBoxOverride | undefined,
+  W: number,
+  H: number,
+): ResolvedTextBox {
+  if (!override) return textBox(it, W, H);
+  const x = Math.max(0, Math.min(Math.max(0, W - 1), override.x));
+  const y = Math.max(0, Math.min(Math.max(0, H - 1), override.y));
+  const w = Math.max(1, Math.min(W - x, override.w));
+  const h = Math.max(1, Math.min(H - y, override.h));
+  return { x, y, w, h };
+}
+
+// Area teks efektif: box luar dikurangi inner factor (elips/freeform/fallback)
+// dan dipusatkan. Editor memakai ini agar preview client memakai ukuran area
+// yang sama dengan server (yang menghitung fitText dari w/h area ini).
+export function textAreaFor(
+  it: OverlayItem,
+  override: TextBoxOverride | undefined,
+  W: number,
+  H: number,
+): ResolvedTextBox {
+  const outer = textBoxFor(it, override, W, H);
+  const f = override || validPolygon(it.polygon) ? { w: 1, h: 1 } : innerFactor(it.fallbackShape);
+  const w = outer.w * f.w;
+  const h = outer.h * f.h;
+  return {
+    x: outer.x + (outer.w - w) / 2,
+    y: outer.y + (outer.h - h) / 2,
+    w,
+    h,
+  };
+}
+
 // Bentuk area yang ditutup mask: kontur bubble, persegi fallback, atau elips.
 // Disimpan terpisah dari SVG agar bisa dipakai juga untuk mengambil sampel
 // warna kertas di mode "bubble".
@@ -287,16 +243,19 @@ type MaskGeometry =
 // agar tepi huruf tertutup, radius kecil.
 // "manual" = kotak yang digambar user di editor: diisi PERSIS sesuai kotak
 // (tanpa inset/expand), hanya di-clamp ke batas gambar.
+// "none" = mask dinonaktifkan user dari editor; area tetap ada di daftar agar
+// maskSources tidak jatuh ke fallback per kotak teks.
 // clipPolygon = kontur bubble; mask kotak dipotong agar tidak melewati garis.
 interface MaskSource {
   bbox: BBox;
   polygon?: OverlayPolygonPoint[];
   clipPolygon?: OverlayPolygonPoint[];
   kind?: string;
-  fallbackShape?: "rect" | "round" | "line" | "manual";
+  fallbackShape?: "rect" | "round" | "line" | "manual" | "none";
 }
 
 function maskGeometry(it: MaskSource, W: number, H: number): MaskGeometry | null {
+  if (it.fallbackShape === "none") return null;
   if (validPolygon(it.polygon)) {
     return { kind: "polygon", polygon: it.polygon, bbox: polygonBBox(it.polygon) };
   }
@@ -421,6 +380,76 @@ function fillShapeSvg(g: MaskGeometry, color: string, key = "0"): string {
   }
   const { cx, cy, rx, ry } = g.ellipse;
   return `<ellipse cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" rx="${rx.toFixed(1)}" ry="${ry.toFixed(1)}" fill="${color}"/>`;
+}
+
+export type BrushPoint = [number, number];
+
+// Goresan brush dari editor koreksi mask. `erase` menghapus bagian goresan
+// sebelumnya (bukan menambah mask), persis seperti kanvas: urutan goresan
+// menentukan hasil akhir.
+export interface BrushStroke {
+  mode: "paint" | "erase";
+  size: number;
+  points: BrushPoint[];
+}
+
+function brushBBox(s: BrushStroke): BBox {
+  const r = s.size / 2;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [x, y] of s.points) {
+    if (x < x0) x0 = x;
+    if (y < y0) y0 = y;
+    if (x > x1) x1 = x;
+    if (y > y1) y1 = y;
+  }
+  return { x0: x0 - r, y0: y0 - r, x1: x1 + r, y1: y1 + r };
+}
+
+function brushShapeSvg(s: BrushStroke, color: string): string {
+  const [first] = s.points;
+  if (s.points.length === 1) {
+    return `<circle cx="${first[0].toFixed(1)}" cy="${first[1].toFixed(1)}" r="${(s.size / 2).toFixed(1)}" fill="${color}"/>`;
+  }
+  const d = s.points
+    .map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`)
+    .join(" ");
+  return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${s.size.toFixed(1)}" stroke-linecap="round" stroke-linejoin="round"/>`;
+}
+
+// Goresan paint diwarnai warna kertas; goresan erase sesudahnya dipotong lewat
+// <mask> sehingga urutan paint→erase→paint sama dengan kanvas editor. Semua
+// goresan digabung dalam satu SVG = satu pass compositing, bukan N pass sharp.
+function brushLayerSvg(
+  strokes: BrushStroke[],
+  colors: Array<string | null>,
+  W: number,
+  H: number,
+): string {
+  const defs: string[] = [];
+  const shapes: string[] = [];
+  let paint = 0;
+  strokes.forEach((s, i) => {
+    if (s.mode === "erase") return;
+    const color = colors[paint++] || "white";
+    const shape = brushShapeSvg(s, color);
+    const erasers = strokes.slice(i + 1).filter((later) => later.mode === "erase");
+    if (!erasers.length) {
+      shapes.push(shape);
+      return;
+    }
+    const id = `brush-erase-${i}`;
+    defs.push(
+      `<mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}">` +
+        `<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>` +
+        erasers.map((e) => brushShapeSvg(e, "#000000")).join("") +
+        `</mask>`,
+    );
+    shapes.push(`<g mask="url(#${id})">${shape}</g>`);
+  });
+  return `<defs>${defs.join("")}</defs>${shapes.join("")}`;
 }
 
 function inGeometry(g: MaskGeometry, x: number, y: number): boolean {
@@ -558,7 +587,38 @@ export interface CleanArea {
   /** Kontur bubble untuk memotong kotak mask (mask baris dekat tepi). */
   clipPolygon?: OverlayPolygonPoint[];
   kind?: string;
-  fallbackShape?: "rect" | "round" | "line" | "manual";
+  fallbackShape?: "rect" | "round" | "line" | "manual" | "none";
+}
+
+// Perubahan user atas mask OTOMATIS (garis kuning di editor). Disimpan
+// per-indeks cleanAreas: bbox baru = kotak digeser/diubah ukuran, deleted =
+// mask dimatikan. Indeks tetap valid karena cleanAreas tidak berubah setelah
+// halaman diproses.
+export interface AutoMaskEdit {
+  index: number;
+  bbox?: BBox;
+  deleted?: boolean;
+}
+
+// Terapkan edit otomatis ke daftar cleanAreas. Area yang dihapus diganti
+// placeholder "none" (bukan dibuang) supaya jumlah area tetap > 0 dan
+// overlayTranslations tidak jatuh ke fallback "setiap kotak teks ditimpa".
+export function applyAutoMaskEdits(
+  areas: CleanArea[],
+  edits: AutoMaskEdit[] | undefined,
+): CleanArea[] {
+  if (!edits?.length) return areas;
+  const byIndex = new Map<number, AutoMaskEdit>();
+  for (const edit of edits) byIndex.set(edit.index, edit);
+  return areas.map((area, i) => {
+    const edit = byIndex.get(i);
+    if (!edit) return area;
+    if (edit.deleted || !edit.bbox) {
+      return { bbox: area.bbox, fallbackShape: "none" };
+    }
+    // Kotak user menggantikan kontur bubble: mask mengikuti kotak persis.
+    return { bbox: edit.bbox, fallbackShape: "manual" };
+  });
 }
 
 // items: [{ text (ID), bbox:{x0,y0,x1,y1}, polygon?, kind? }]
@@ -571,29 +631,82 @@ export interface CleanArea {
 export async function overlayTranslations(
   inputBuffer: Buffer,
   items: OverlayItem[],
-  options: { cleanMode?: CleanMode; cleanAreas?: CleanArea[] } = {},
+  options: {
+    cleanMode?: CleanMode;
+    cleanAreas?: CleanArea[];
+    manualStrokes?: BrushStroke[];
+    font?: FontChoice;
+    textOverrides?: TextBoxOverride[];
+  } = {},
 ): Promise<Buffer> {
   try {
     const meta = await sharp(inputBuffer).metadata();
     const W = meta.width || 0;
     const H = meta.height || 0;
     const cleanAreas = options.cleanAreas ?? [];
-    if (!W || !H || (!items.length && !cleanAreas.length)) return inputBuffer;
+    const manualStrokes = (options.manualStrokes ?? []).filter(
+      (s) =>
+        Array.isArray(s.points) &&
+        s.points.length > 0 &&
+        Number.isFinite(s.size) &&
+        s.size > 0 &&
+        s.points.every((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])),
+    );
+    if (!W || !H || (!items.length && !cleanAreas.length && !manualStrokes.length)) return inputBuffer;
 
     const cleanMode = normalizeCleanMode(options.cleanMode);
+    const font = normalizeFont(options.font);
+    const overrideMap = new Map<number, TextBoxOverride>();
+    for (const override of options.textOverrides ?? []) {
+      if (
+        Number.isInteger(override.index) &&
+        Number.isFinite(override.x) &&
+        Number.isFinite(override.y) &&
+        Number.isFinite(override.w) &&
+        Number.isFinite(override.h) &&
+        override.w > 0 &&
+        override.h > 0
+      ) {
+        overrideMap.set(override.index, override);
+      }
+    }
     // Sumber bentuk mask: area bubble (kalau ada) atau text box masing-masing.
     const maskSources: Array<CleanArea | OverlayItem> = cleanAreas.length ? cleanAreas : items;
     const maskGeometries = maskSources.map((it) => maskGeometry(it, W, H));
     const itemGeometries = items.map((it) => maskGeometry(it, W, H));
+    // Warna kertas untuk tiap goresan paint di-sample dari cincin di luar
+    // bounding box goresan, sama seperti mask manual kotak.
+    const paintStrokes = manualStrokes.filter((s) => s.mode !== "erase");
+    const brushGeometries = paintStrokes.map((s) => {
+      const b = brushBBox(s);
+      const x = Math.max(0, Math.floor(b.x0));
+      const y = Math.max(0, Math.floor(b.y0));
+      const x1 = Math.min(W, Math.ceil(b.x1));
+      const y1 = Math.min(H, Math.ceil(b.y1));
+      return {
+        kind: "rect" as const,
+        rect: { x, y, w: Math.max(1, x1 - x), h: Math.max(1, y1 - y) },
+        bbox: { x0: x, y0: y, x1, y1 },
+      };
+    });
 
     // Sampling warna hanya perlu kalau hasilnya dipakai: isi mask mode
     // "bubble", atau penentu warna huruf saat mask tidak putih.
     const sampled =
       cleanMode === "white"
         ? []
-        : await samplePaperColors(inputBuffer, [...maskGeometries, ...itemGeometries], W, H);
+        : await samplePaperColors(
+            inputBuffer,
+            [...maskGeometries, ...itemGeometries, ...brushGeometries],
+            W,
+            H,
+          );
     const maskPaper = sampled.slice(0, maskGeometries.length);
-    const itemPaper = sampled.slice(maskGeometries.length);
+    const itemPaper = sampled.slice(
+      maskGeometries.length,
+      maskGeometries.length + itemGeometries.length,
+    );
+    const brushPaper = sampled.slice(maskGeometries.length + itemGeometries.length);
 
     // Teks yang berada DI DALAM bubble ikut ditimpa per kotak teks. Ini
     // menutup sisa huruf di tepi bubble saat mask bubble berupa kapsul
@@ -637,7 +750,7 @@ export async function overlayTranslations(
             ...extraMasks.map(({ g, color }, k) => fillShapeSvg(g, color, `x${k}`)),
           ].join("");
 
-    const cleaned = cleanShapes
+    let cleaned = cleanShapes
       ? await sharp(inputBuffer)
           .composite([
             {
@@ -652,24 +765,53 @@ export async function overlayTranslations(
           .toBuffer()
       : inputBuffer;
 
+    // Koreksi brush manual: goresan user menimpa area apa pun (termasuk yang
+    // tidak terdeteksi OCR), dengan urutan paint/erase seperti di editor.
+    const brushShapes =
+      cleanMode !== "none" && manualStrokes.length
+        ? brushLayerSvg(manualStrokes, brushPaper, W, H)
+        : "";
+    if (brushShapes) {
+      cleaned = await sharp(cleaned)
+        .composite([
+          {
+            input: Buffer.from(
+              `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${brushShapes}</svg>`,
+            ),
+            left: 0,
+            top: 0,
+          },
+        ])
+        .png()
+        .toBuffer();
+    }
+
     const texts = items
       .map((it, k) => {
-        const { x, y, w, h } = textBox(it, W, H);
+        const override = overrideMap.get(k);
+        // Teks yang dihapus user: area tetap dibersihkan, tapi tidak digambar.
+        if (override?.deleted) return "";
+        const label = typeof override?.text === "string" ? override.text : it.text;
+        if (!label.trim()) return "";
+        const { x, y, w, h } = textBoxFor(it, override, W, H);
         if (w <= 10 || h <= 10) return "";
-        const f = validPolygon(it.polygon) ? { w: 1, h: 1 } : innerFactor(it.fallbackShape);
+        const f =
+          override || validPolygon(it.polygon) ? { w: 1, h: 1 } : innerFactor(it.fallbackShape);
         const iw = w * f.w;
         const ih = h * f.h;
-        const { fs, lines, lineH } = fitFont(it.text, iw - 8, ih - 8);
+        const { fs, lines, lineH } = fitText(label, iw - 8, ih - 8, font.scale);
         const totalH = lines.length * lineH;
         const cx = x + w / 2;
         // Di mode "bubble"/"none", huruf ikut kontras dengan warna kertas:
         // hitam di kertas terang, putih di panel/bubble gelap.
         const paperColor = itemPaper[k];
         const ink = paperColor && luminance(paperColor) < 0.45 ? "white" : "black";
+        const family = esc(fontStack(font.family));
+        const weight = font.bold ? "bold" : "normal";
         let ty = y + (h - totalH) / 2 + lineH * 0.8;
         const tspans = lines
           .map((ln) => {
-            const s = `<text x="${cx.toFixed(1)}" y="${ty.toFixed(1)}" font-family="${FONT_FAMILY}" font-size="${fs}" font-weight="bold" text-anchor="middle" fill="${ink}">${esc(ln)}</text>`;
+            const s = `<text x="${cx.toFixed(1)}" y="${ty.toFixed(1)}" font-family="${family}" font-size="${fs}" font-weight="${weight}" text-anchor="middle" fill="${ink}">${esc(ln)}</text>`;
             ty += lineH;
             return s;
           })

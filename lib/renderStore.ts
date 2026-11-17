@@ -3,8 +3,15 @@
 // otomatis agar halaman bisa dirender ulang tanpa mengulang OCR/translate.
 import fs from "fs";
 import path from "path";
-import type { CleanArea, OverlayItem } from "./overlay";
+import type {
+  AutoMaskEdit,
+  BrushStroke,
+  CleanArea,
+  OverlayItem,
+  TextBoxOverride,
+} from "./overlay";
 import type { CleanMode } from "./cleanMode";
+import type { FontChoice } from "./fonts";
 
 export const RENDER_FILE = ".render.json";
 export const SOURCE_DIR = ".src";
@@ -19,14 +26,22 @@ export interface StoredPage {
   items: OverlayItem[];
   /** Mask otomatis hasil proses (garis/bubble/region). */
   cleanAreas: CleanArea[];
-  /** Kotak tambahan dari user; disimpan agar editor bisa dibuka lagi. */
-  manualMasks: CleanArea[];
+  /** Perubahan user atas mask otomatis (geser/ubah ukuran/hapus). */
+  autoMaskEdits: AutoMaskEdit[];
+  /** Goresan brush tambahan dari user; disimpan agar editor bisa dibuka lagi. */
+  manualStrokes: BrushStroke[];
+  /** Font khusus halaman ini (kalau beda dari font job). */
+  font?: FontChoice;
+  /** Kotak teks hasil geser/resize user (per item teks). */
+  textOverrides?: TextBoxOverride[];
   /** Jumlah bubble tanpa teks OCR (dibiarkan utuh). */
   undetected: number;
 }
 
 export interface RenderStore {
   version: 1;
+  /** Font default seluruh job (dipakai kalau halaman tidak punya override). */
+  font?: FontChoice;
   pages: Record<string, StoredPage>;
 }
 

@@ -343,7 +343,8 @@ export async function processCollectedImages(
         cleanMode,
         items: [],
         cleanAreas,
-        manualMasks: [],
+        autoMaskEdits: [],
+        manualStrokes: [],
         undetected: 0,
       };
       pages.push({
@@ -857,7 +858,8 @@ export async function processCollectedImages(
       cleanMode,
       items,
       cleanAreas: cleanAreas ?? [],
-      manualMasks: [],
+      autoMaskEdits: [],
+      manualStrokes: [],
       undetected,
     };
     pages.push({
