@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import { resolveOcrEngine } from "@/lib/ocrComicsPlus";
+import { resolveOcrEngine } from "@/lib/ocrEngine";
 import { googleVisionConfig } from "@/lib/ocrGoogleVision";
 import { openRouterConfig } from "@/lib/translate";
 import { normalizeAppLang } from "@/lib/languages";

@@ -4,7 +4,7 @@ import AdmZip from "adm-zip";
 import { createExtractorFromData } from "node-unrar-js";
 import sharp from "sharp";
 import { ocrBubbleCrops, detectBubbleLines, ocrEnglish, type BBox } from "@/lib/ocr";
-import { ocrComicsPlus, type OcrEngine } from "@/lib/ocrComicsPlus";
+import type { OcrEngine } from "@/lib/ocrEngine";
 import { ocrVisionBubbleCrops } from "@/lib/ocrVisionLLM";
 import { ocrGoogleBubbleCrops, ocrGoogleFullPage, ocrGooglePageDetail, mergeVisionBlocks, findRegionForBox } from "@/lib/ocrGoogleVision";
 import { bubbleEnabled, cropBubble, detectBubbles } from "@/lib/bubble";
@@ -179,9 +179,6 @@ export async function processCollectedImages(
       "Mode 'Bersihkan saja' butuh deteksi bubble (Ogkalu/Psimera). Pilih salah satunya, atau matikan mode bersih.",
     );
   }
-  // comics_text_plus hanya latin (EN). Untuk sumber JA/ID, paksa fallback
-  // Tesseract di dalam loop (tanpa gagal diam-diam: via dicatat).
-  const comicsLatinOnly = sourceLang !== "en";
   const onEvent = opts.onProgress ?? noop;
   const N = images.length;
 
@@ -217,32 +214,25 @@ export async function processCollectedImages(
     totalPages: N,
   });
 
-  // Mode bersih tidak memakai OCR: jalur comics dan region Google dilewati,
-  // dan deteksi bubble YOLO wajib supaya ada area yang bisa ditimpa.
-  const useComics = !cleanOnly && ocrEngine === "comics_text_plus" && !comicsLatinOnly;
-  const useComicsRequested = !cleanOnly && ocrEngine === "comics_text_plus";
+  // Mode bersih tidak memakai OCR: region Google dilewati, dan deteksi
+  // bubble YOLO wajib supaya ada area yang bisa ditimpa.
   onEvent({
     percent: 12,
     stage: "bubble",
     message: cleanOnly
       ? "Deteksi bubble YOLO (mode bersih)..."
-      : useComics
-        ? "OCR comics_text_plus (FCENet+MASTER)..."
-        : useComicsRequested && comicsLatinOnly
-          ? "comics_text_plus latin-only — fallback Tesseract untuk sumber non-Inggris..."
-          : useGoogleRegions
-            ? "Region bubble Google Vision..."
-            : "Deteksi bubble YOLO...",
+      : useGoogleRegions
+        ? "Region bubble Google Vision..."
+        : "Deteksi bubble YOLO...",
     currentPage: 0,
     totalPages: N,
   });
-  const comicsLists = useComics ? await ocrComicsPlus(normalizedList) : null;
   // useGoogleRegions melewati YOLO total (tanpa Python/model): region
   // datang dari blok teks Google per halaman di dalam loop di bawah.
   // Mode bersih selalu butuh YOLO: tanpa bubble tidak ada yang bisa ditimpa.
   const useBubble = cleanOnly
     ? bubbleEnabled(true)
-    : !useComics && !useGoogleRegions && bubbleEnabled(bubbleParam !== "0");
+    : !useGoogleRegions && bubbleEnabled(bubbleParam !== "0");
   if (cleanOnly && !useBubble) {
     throw new Error(
       "Mode 'Bersihkan saja' butuh deteksi bubble YOLO. Pastikan BUBBLE_ENABLED=1 dan model bubble tersedia.",
@@ -260,11 +250,9 @@ export async function processCollectedImages(
     onEvent({
       percent: 25,
       stage: "bubble",
-      message: useComics
-        ? `OCR awal selesai`
-        : useGoogleRegions
-          ? `Region bubble dari Google (per halaman)`
-          : `Terdeteksi ${bubbleTotal} bubble di ${N} halaman`,
+      message: useGoogleRegions
+        ? `Region bubble dari Google (per halaman)`
+        : `Terdeteksi ${bubbleTotal} bubble di ${N} halaman`,
       currentPage: 0,
       totalPages: N,
       pageIndex: i,
@@ -461,40 +449,6 @@ export async function processCollectedImages(
       });
       // Hasil kosong = lanjut 0 box (BUKAN fallback ke YOLO/Tesseract —
       // saklarnya ya dropdown bubble itu sendiri).
-    } else if (useComics) {
-      boxes = comicsLists?.[i] ?? [];
-      via = "comics-text-plus";
-      onEvent({
-        percent: base + span * 0.3,
-        stage: "ocr",
-        message: `Halaman ${i + 1}/${N}: OCR comics ${boxes.length} teks`,
-        currentPage: i,
-        totalPages: N,
-        pageIndex: i,
-        pagePatch: { stage: "ocr", ocrTexts: boxes.length, totalTexts: boxes.length },
-      });
-      if (!boxes.length) {
-        boxes = await ocrEnglish(normalized, (p) => {
-          onEvent({
-            percent: base + span * (0.02 + p * 0.3),
-            stage: "ocr",
-            message: `Halaman ${i + 1}/${N}: OCR fallback ${Math.round(p * 100)}%`,
-            currentPage: i,
-            totalPages: N,
-            pageIndex: i,
-          });
-        }, sourceLang);
-        via = useComicsRequested && comicsLatinOnly ? "ocr-full-tesseract" : "ocr-full-fallback";
-        onEvent({
-          percent: base + span * 0.35,
-          stage: "ocr",
-          message: `Halaman ${i + 1}/${N}: fallback ${boxes.length} teks`,
-          currentPage: i,
-          totalPages: N,
-          pageIndex: i,
-          pagePatch: { ocrTexts: boxes.length, totalTexts: boxes.length },
-        });
-      }
     } else if (bubbles.length > 0) {
       const crops = await Promise.all(bubbles.map((b) => cropBubble(normalized, b, width, height)));
       // Pertahankan index bubble asli: valid[k] sebelumnya adalah crop
