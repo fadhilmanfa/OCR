@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CloudUpload, FileArchive, X } from "lucide-react";
+import { CloudUpload, FileArchive, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -23,11 +23,13 @@ function FileThumb({
   onRemove,
   disabled,
   leaving,
+  enterDelay = 0,
 }: {
   file: File;
   onRemove: () => void;
   disabled: boolean;
   leaving: boolean;
+  enterDelay?: number;
 }) {
   // Blob URL dibuat di dalam effect (bukan saat render) agar selamat dari
   // StrictMode dev yang menjalankan cleanup effect tepat setelah mount.
@@ -44,11 +46,16 @@ function FileThumb({
 
   return (
     <div
+      style={
+        leaving || enterDelay <= 0
+          ? undefined
+          : { animationDelay: `${enterDelay}ms` }
+      }
       className={cn(
-        "group bg-muted relative size-24 shrink-0 overflow-hidden border sm:size-28",
+        "group bg-muted relative h-24 w-full shrink-0 overflow-hidden border sm:h-28",
         leaving
           ? "animate-out fade-out-0 zoom-out-95 duration-180"
-          : "animate-in fade-in-0 zoom-in-95 duration-200"
+          : "animate-in fade-in-0 zoom-in-95 fill-mode-both duration-200"
       )}
     >
       {url ? (
@@ -90,7 +97,7 @@ function FileThumb({
 interface Props {
   files: File[];
   leaving: File[];
-  totalBytes: number;
+  addedFrom: number;
   disabled: boolean;
   onAdd: (list: FileList | File[] | null) => void;
   onRemove: (index: number) => void;
@@ -100,7 +107,7 @@ interface Props {
 export default function UploadDropzone({
   files,
   leaving,
-  totalBytes,
+  addedFrom,
   disabled,
   onAdd,
   onRemove,
@@ -108,6 +115,7 @@ export default function UploadDropzone({
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [dropTick, setDropTick] = useState(0);
 
   // Tempel gambar langsung dari clipboard (Ctrl+V) selama belum ada job.
   useEffect(() => {
@@ -139,49 +147,137 @@ export default function UploadDropzone({
           event.preventDefault();
           if (!disabled) setDragOver(true);
         }}
-        onDragLeave={() => setDragOver(false)}
+        onDragLeave={(event) => {
+          // Jangan matikan highlight saat kursor cuma pindah ke anak elemen.
+          if (event.currentTarget.contains(event.relatedTarget as Node | null))
+            return;
+          setDragOver(false);
+        }}
         onDrop={(event) => {
           event.preventDefault();
           setDragOver(false);
+          setDropTick((tick) => tick + 1);
           onAdd(event.dataTransfer.files);
         }}
         className={cn(
-          "panel p-1.5 transition-colors",
-          dragOver && "border-foreground"
+          "panel p-1.5 transition-[scale,box-shadow,border-color] duration-200 ease-out",
+          dragOver && "border-foreground scale-[1.01] shadow-sm"
         )}
       >
         <div
           className={cn(
-            "flex flex-col items-center border border-dashed px-4 py-9 text-center transition-colors sm:py-12",
+            "relative border border-dashed px-4 transition-colors",
+            files.length === 0
+              ? "flex flex-col items-center py-9 text-center sm:py-12"
+              : "py-4",
             dragOver ? "border-foreground bg-muted" : "border-input bg-muted/20"
           )}
         >
-          <span className="bg-background flex size-11 items-center justify-center border">
-            <CloudUpload aria-hidden="true" className="size-5" />
-          </span>
-          <p className="mt-4 text-sm font-semibold">Tarik file ke sini</p>
-          <p className="text-muted-foreground mt-1 text-xs">
-            atau tempel dengan{" "}
-            <kbd className="bg-background border px-1 py-0.5 font-mono text-[10px]">
-              Ctrl
-            </kbd>{" "}
-            +{" "}
-            <kbd className="bg-background border px-1 py-0.5 font-mono text-[10px]">
-              V
-            </kbd>
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            className="mt-5 h-10 min-w-36"
-            onClick={() => inputRef.current?.click()}
-            disabled={disabled}
-          >
-            Pilih file
-          </Button>
-          <p className="text-muted-foreground mt-4 font-mono text-[10px] uppercase tracking-[0.14em]">
-            JPG · PNG · WEBP · ZIP · RAR
-          </p>
+          {dropTick > 0 && (
+            <span
+              key={dropTick}
+              aria-hidden="true"
+              className="animate-drop-flash pointer-events-none absolute inset-0 border-2 border-foreground"
+            />
+          )}
+          {files.length === 0 ? (
+            <>
+              <span
+                className={cn(
+                  "bg-background flex size-11 items-center justify-center border transition-[translate,scale] duration-200",
+                  dragOver && "-translate-y-0.5 scale-105"
+                )}
+              >
+                <CloudUpload aria-hidden="true" className="size-5" />
+              </span>
+              <p className="mt-4 text-sm font-semibold">Tarik file ke sini</p>
+              <p className="text-muted-foreground mt-1 text-xs">
+                atau tempel dengan{" "}
+                <kbd className="bg-background border px-1 py-0.5 font-mono text-[10px]">
+                  Ctrl
+                </kbd>{" "}
+                +{" "}
+                <kbd className="bg-background border px-1 py-0.5 font-mono text-[10px]">
+                  V
+                </kbd>
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-5 h-10 min-w-36"
+                onClick={() => inputRef.current?.click()}
+                disabled={disabled}
+              >
+                Pilih file
+              </Button>
+              <p className="text-muted-foreground mt-4 font-mono text-[10px] uppercase tracking-[0.14em]">
+                JPG · PNG · WEBP · ZIP · RAR
+              </p>
+            </>
+          ) : (
+            <div className="animate-in fade-in-0 duration-200">
+              <div className="flex items-center justify-between gap-3">
+                <p
+                  className="num text-muted-foreground font-mono text-[11px]"
+                  aria-live="polite"
+                >
+                  {files.length} file
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    onClick={() => inputRef.current?.click()}
+                    disabled={disabled}
+                    aria-label="Tambah file"
+                    title="Tambah file"
+                  >
+                    <Plus className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="text-muted-foreground hover:text-destructive size-8"
+                    onClick={onClear}
+                    disabled={disabled}
+                    aria-label="Hapus semua file"
+                    title="Hapus semua"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-3 flex gap-0 overflow-x-auto pb-1">
+                {files.map((file, index) => {
+                  const isLeaving = leaving.includes(file);
+                  return (
+                    <div
+                      key={`${file.name}-${file.size}-${file.lastModified}`}
+                      className={cn(
+                        "shrink-0 overflow-hidden transition-[width,padding-right,opacity] duration-200 ease-out",
+                        isLeaving ? "w-0 pr-0 opacity-0" : "w-24 pr-2 sm:w-28"
+                      )}
+                    >
+                      <FileThumb
+                        file={file}
+                        disabled={disabled}
+                        leaving={isLeaving}
+                        enterDelay={
+                          index < addedFrom
+                            ? 0
+                            : Math.min(index - addedFrom, 8) * 30
+                        }
+                        onRemove={() => onRemove(index)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <input
             ref={inputRef}
             type="file"
@@ -195,49 +291,6 @@ export default function UploadDropzone({
             className="hidden"
             disabled={disabled}
           />
-        </div>
-      </div>
-
-      {/* Selalu mount agar tinggi mengembang/menyusut mulus; -mt-4 saat
-          tertutup menetralkan margin space-y parent sehingga tak ada gap sisa. */}
-      <div
-        className={cn(
-          "grid transition-all duration-300 ease-out",
-          files.length > 0
-            ? "grid-rows-[1fr] opacity-100"
-            : "-mt-4 grid-rows-[0fr] opacity-0"
-        )}
-      >
-        <div className="min-h-0 overflow-hidden">
-          <div className="panel p-4">
-            <div className="flex items-center justify-between gap-3">
-              <p
-                className="num text-muted-foreground font-mono text-[11px]"
-                aria-live="polite"
-              >
-                {files.length} file · {fileSize(totalBytes)}
-              </p>
-              <button
-                type="button"
-                onClick={onClear}
-                disabled={disabled}
-                className="text-muted-foreground hover:text-foreground text-[11px] underline-offset-4 transition-colors hover:underline disabled:opacity-50"
-              >
-                Hapus semua
-              </button>
-            </div>
-            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-              {files.map((file, index) => (
-                <FileThumb
-                  key={`${file.name}-${file.size}-${index}`}
-                  file={file}
-                  disabled={disabled}
-                  leaving={leaving.includes(file)}
-                  onRemove={() => onRemove(index)}
-                />
-              ))}
-            </div>
-          </div>
         </div>
       </div>
     </section>

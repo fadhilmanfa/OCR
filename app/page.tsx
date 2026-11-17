@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CircleAlert, Loader2, X } from "lucide-react";
+import { CircleAlert, LayoutGrid, Loader2, Minus, Plus, Rows3, X } from "lucide-react";
 import { toast } from "sonner";
 import AppHeader, { type HeaderStatus } from "@/components/AppHeader";
 import ControlPanel from "@/components/ControlPanel";
 import Downloads from "@/components/Downloads";
 import JobProgressCard from "@/components/JobProgressCard";
 import PageCard from "@/components/PageCard";
+import PageThumb from "@/components/PageThumb";
+import { usePreviewLayout } from "@/components/usePreviewLayout";
 import UploadDropzone from "@/components/UploadDropzone";
 import { useFileQueue } from "@/components/useFileQueue";
 import { useJobSession } from "@/components/useJobSession";
@@ -22,12 +24,11 @@ import { LANG_SHORT } from "@/lib/languages";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
-const RESULT_TTL_SECONDS = 10 * 60; // samakan dengan OUTPUT_TTL_MS di lib/jobs.ts
+const RESULT_TTL_SECONDS = 30 * 60; // samakan dengan OUTPUT_TTL_MS di lib/jobs.ts
 const WARNING_THRESHOLDS = [60, 180, 300]; // 1 mnt, 3 mnt, 5 mnt
 
 const OCR_SHORT: Record<string, string> = {
   tesseract: "Tesseract",
-  comics_text_plus: "Comics Text Plus",
   vision_llm: "Vision LLM",
   google_vision: "Google Vision",
 };
@@ -65,10 +66,19 @@ export default function Home() {
   const {
     ready, storageUnavailable, result, status, busy, progress, settings, jobId,
     updateSettings, onJobStarted, startNew: resetSession, remainingSeconds,
+    updateResultPage,
   } = useJobSession();
   const [uploading, setUploading] = useState(false);
   const queue = useFileQueue(busy || uploading);
+  const {
+    view: previewView,
+    explicitView,
+    thumbWidth,
+    setView: setPreviewView,
+    setThumbWidth,
+  } = usePreviewLayout();
   const submitting = useRef(false);
+  const jobToastId = useRef<string | number | null>(null);
   const [resetting, setResetting] = useState(false);
   const [warning, setWarning] = useState<number | null>(null);
   const [dismissed, setDismissed] = useState<number[]>([]);
@@ -78,6 +88,7 @@ export default function Home() {
   const [prevJobId, setPrevJobId] = useState<string | null>(null);
   const [jobVersion, setJobVersion] = useState(0);
   const isError = status.startsWith("Gagal");
+  const pageFiles = result?.pages.map((page) => page.file) ?? [];
   const showForm = !busy && !result;
   const showResult = !busy && result !== null;
   const activeJobId = result?.jobId ?? null;
@@ -140,6 +151,57 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [warning, closing, confirming, confirmClosing]);
 
+  // Progres upload/proses memakai satu toast yang sama (id tetap).
+  useEffect(() => {
+    const id = jobToastId.current;
+    if (id === null || !progress || result) return;
+    const percent = Math.min(100, Math.max(0, Math.round(progress.percent)));
+    toast.loading(`Memproses ${percent}%`, {
+      id,
+      description: progress.message || "Halaman diproses satu per satu.",
+    });
+  }, [progress, result]);
+
+  useEffect(() => {
+    const id = jobToastId.current;
+    if (id === null) return;
+    if (result) {
+      toast.success("Komik siap", {
+        id,
+        description: `${result.pages.length} halaman siap diunduh.`,
+        action: {
+          label: "Lihat hasil",
+          onClick: () =>
+            document
+              .getElementById("hasil")
+              ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        },
+      });
+      jobToastId.current = null;
+    } else if (isError && status) {
+      toast.error("Proses gagal", {
+        id,
+        description: status.replace(/^Gagal:\s*/i, ""),
+      });
+      jobToastId.current = null;
+    }
+  }, [result, isError, status]);
+
+  // Ctrl/⌘ + wheel atau pinch di mana pun pada halaman hasil mengubah ukuran
+  // kartu. Listener native + passive:false supaya preventDefault bekerja.
+  useEffect(() => {
+    if (!showResult || explicitView !== "cards") return;
+    function onWheel(event: WheelEvent) {
+      if (!event.ctrlKey && !event.metaKey) return;
+      // Jangan rebut zoom saat editor/modal lain sedang terbuka.
+      if (document.querySelector('[aria-modal="true"]')) return;
+      event.preventDefault();
+      setThumbWidth((prev) => prev - event.deltaY * 0.6);
+    }
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, [showResult, explicitView, setThumbWidth]);
+
   async function handleProcess() {
     if (submitting.current || busy || uploading) return;
     if (!queue.files.length) {
@@ -183,6 +245,9 @@ export default function Home() {
 
     submitting.current = true;
     setUploading(true);
+    jobToastId.current = toast.loading("Mengunggah file…", {
+      description: `${queue.files.length} file`,
+    });
     try {
       const response = await fetch("/api/jobs", { method: "POST", body: form });
       const started = await response.json();
@@ -191,11 +256,17 @@ export default function Home() {
         throw new Error("Server tidak mengembalikan jobId yang valid");
       }
       onJobStarted(started.jobId);
-      queue.clear();
+      queue.clear(true);
+      toast.loading("Memproses komik…", {
+        id: jobToastId.current,
+        description: "Menyiapkan halaman pertama.",
+      });
     } catch (error) {
       toast.error("Gagal memproses", {
+        id: jobToastId.current ?? undefined,
         description: error instanceof Error ? error.message : String(error),
       });
+      jobToastId.current = null;
     } finally {
       submitting.current = false;
       setUploading(false);
@@ -272,7 +343,10 @@ export default function Home() {
 
           <div
             className={cn(
-              "grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_1fr] lg:items-start lg:gap-x-8 lg:gap-y-6",
+              "grid min-w-0 gap-6 lg:grid-rows-[auto_1fr] lg:items-start lg:gap-x-8 lg:gap-y-6",
+              result !== null
+                ? "lg:grid-cols-1"
+                : "lg:grid-cols-[minmax(0,1fr)_22rem]",
               showForm ? "mt-8" : "mt-6"
             )}
           >
@@ -282,7 +356,7 @@ export default function Home() {
                   <UploadDropzone
                     files={queue.files}
                     leaving={queue.leaving}
-                    totalBytes={queue.totalBytes}
+                    addedFrom={queue.addedFrom}
                     disabled={busy || uploading}
                     onAdd={queue.add}
                     onRemove={queue.remove}
@@ -300,23 +374,20 @@ export default function Home() {
               {busy && <JobProgressCard progress={progress} status={status} />}
             </div>
 
-            <div
-              className={cn(
-                "min-w-0 lg:order-none lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-stretch",
-                result !== null ? "order-3" : "order-2"
-              )}
-            >
-              <ControlPanel
-                settings={settings}
-                onSettingsChange={updateSettings}
-                fileCount={queue.files.length}
-                busy={busy}
-                uploading={uploading}
-                hasResult={result !== null}
-                progressPercent={progress?.percent ?? 0}
-                onProcess={() => void handleProcess()}
-              />
-            </div>
+            {result === null && (
+              <div className="order-2 min-w-0 lg:order-none lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-stretch">
+                <ControlPanel
+                  settings={settings}
+                  onSettingsChange={updateSettings}
+                  fileCount={queue.files.length}
+                  busy={busy}
+                  uploading={uploading}
+                  hasResult={result !== null}
+                  progressPercent={progress?.percent ?? 0}
+                  onProcess={() => void handleProcess()}
+                />
+              </div>
+            )}
 
             <div
               id="hasil"
@@ -329,32 +400,119 @@ export default function Home() {
                 <div className="space-y-8">
                   <Downloads result={result} />
                   {result.pages.length > 0 && (
-                    <section aria-labelledby="preview-title" className="space-y-5">
-                      <div className="flex items-center justify-between gap-3 border-b pb-3">
+                    <section
+                      aria-labelledby="preview-title"
+                      className="space-y-5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
                         <h2
                           id="preview-title"
                           className="text-sm font-semibold tracking-tight"
                         >
                           Preview hasil
                         </h2>
-                        <span className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.14em]">
-                          {result.pages.length} halaman
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <div
+                            role="group"
+                            aria-label="Tampilan hasil"
+                            className="flex border"
+                          >
+                            <button
+                              type="button"
+                              aria-pressed={previewView === "cards"}
+                              title="Tampilan kartu"
+                              onClick={() => setPreviewView("cards")}
+                              className={cn(
+                                "flex size-8 items-center justify-center transition-colors",
+                                previewView === "cards"
+                                  ? "bg-foreground text-background"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              <LayoutGrid aria-hidden="true" className="size-4" />
+                              <span className="sr-only">Tampilan kartu</span>
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={previewView === "detail"}
+                              title="Tampilan detail"
+                              onClick={() => setPreviewView("detail")}
+                              className={cn(
+                                "flex size-8 items-center justify-center border-l transition-colors",
+                                previewView === "detail"
+                                  ? "bg-foreground text-background"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              <Rows3 aria-hidden="true" className="size-4" />
+                              <span className="sr-only">Tampilan detail</span>
+                            </button>
+                          </div>
+                          <div className="flex items-center border">
+                            <button
+                              type="button"
+                              aria-label="Perkecil kartu"
+                              title="Perkecil kartu"
+                              disabled={previewView !== "cards"}
+                              onClick={() => setThumbWidth((width) => width - 60)}
+                              className="text-muted-foreground hover:text-foreground flex size-8 items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Minus aria-hidden="true" className="size-4" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Perbesar kartu"
+                              title="Perbesar kartu"
+                              disabled={previewView !== "cards"}
+                              onClick={() => setThumbWidth((width) => width + 60)}
+                              className="text-muted-foreground hover:text-foreground flex size-8 items-center justify-center border-l transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Plus aria-hidden="true" className="size-4" />
+                            </button>
+                          </div>
+                          <span className="text-muted-foreground font-mono text-[10px] uppercase tracking-[0.14em]">
+                            {result.pages.length} halaman
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        {result.pages.map((page, index) => (
-                          <PageCard
-                            key={`${page.file}-${index}`}
-                            page={page}
-                            index={index}
-                            jobId={result.jobId}
-                            sourceLang={result.sourceLang}
-                            targetLang={result.targetLang}
-                            viewVersion={jobVersion}
-                            onJobSaved={setJobVersion}
-                          />
-                        ))}
-                      </div>
+                      {previewView === "cards" ? (
+                        <div className="flex flex-wrap items-start gap-3">
+                          {result.pages.map((page, index) => (
+                            <PageThumb
+                              key={`${page.file}-${index}`}
+                              page={page}
+                              index={index}
+                              jobId={result.jobId}
+                              viewVersion={jobVersion}
+                              width={thumbWidth}
+                              pageFiles={pageFiles}
+                              onJobSaved={setJobVersion}
+                              onPageUpdated={updateResultPage}
+                              apiKey={settings.apiKey}
+                              googleApiKey={settings.googleApiKey}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <div>
+                          {result.pages.map((page, index) => (
+                            <PageCard
+                              key={`${page.file}-${index}`}
+                              page={page}
+                              index={index}
+                              jobId={result.jobId}
+                              sourceLang={result.sourceLang}
+                              targetLang={result.targetLang}
+                              viewVersion={jobVersion}
+                              pageFiles={pageFiles}
+                              onJobSaved={setJobVersion}
+                              onPageUpdated={updateResultPage}
+                              apiKey={settings.apiKey}
+                              googleApiKey={settings.googleApiKey}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </section>
                   )}
                 </div>

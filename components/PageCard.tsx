@@ -21,7 +21,11 @@ export default function PageCard({
   sourceLang,
   targetLang,
   viewVersion = 0,
+  pageFiles,
   onJobSaved,
+  onPageUpdated,
+  apiKey,
+  googleApiKey,
 }: {
   page: ProcessPage;
   index: number;
@@ -29,7 +33,11 @@ export default function PageCard({
   sourceLang?: unknown;
   targetLang?: unknown;
   viewVersion?: number;
+  pageFiles?: string[];
   onJobSaved?: (version: number) => void;
+  onPageUpdated?: (page: ProcessPage) => void;
+  apiKey?: string;
+  googleApiKey?: string;
 }) {
   const src = LANG_SHORT[normalizeAppLang(sourceLang, "en")];
   const tgt = LANG_SHORT[normalizeAppLang(targetLang, "id")];
@@ -60,19 +68,28 @@ export default function PageCard({
           </Badge>
         )}
       </div>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={shownVersion ? `${page.url}?v=${shownVersion}` : page.url}
-        alt={isClean ? `Hasil pembersihan halaman ${index + 1}` : `Hasil terjemahan halaman ${index + 1}`}
-        className="bg-muted w-full border object-contain"
-        loading="lazy"
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={() => setEditing(true)}>
-          <Pencil /> Koreksi mask
-        </Button>
-        {notice && <span className="text-muted-foreground text-xs">{notice}</span>}
+      <div className="group relative">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={shownVersion ? `${page.url}?v=${shownVersion}` : page.url}
+          alt={isClean ? `Hasil pembersihan halaman ${index + 1}` : `Hasil terjemahan halaman ${index + 1}`}
+          className="bg-muted w-full border object-contain"
+          loading="lazy"
+        />
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 transition-colors group-hover:bg-black/15">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => setEditing(true)}
+            className="pointer-events-auto shadow-sm transition-opacity md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:group-focus-within:pointer-events-auto md:group-focus-within:opacity-100"
+          >
+            <Pencil /> Koreksi mask
+          </Button>
+        </div>
       </div>
+      {notice && (
+        <p className="text-muted-foreground text-xs">{notice}</p>
+      )}
       {isClean ? (
         <p className="text-muted-foreground text-xs">
           Mode bersih: {page.bubbleCount ?? 0} bubble ditimpa, tanpa terjemahan.
@@ -105,10 +122,16 @@ export default function PageCard({
         <MaskEditor
           jobId={jobId}
           file={page.file}
+          pageFiles={pageFiles}
           onClose={() => setEditing(false)}
+          onPageUpdated={onPageUpdated}
+          apiKey={apiKey}
+          googleApiKey={googleApiKey}
           onSaved={(v, archivesUpdated, pagesUpdated) => {
             setVersion(v);
-            if (pagesUpdated > 1) onJobSaved?.(v);
+            // Selalu segarkan semua tampilan: halaman yang disimpan bisa saja
+            // berbeda dari halaman yang membuka editor (navigasi panah).
+            onJobSaved?.(v);
             setNotice(
               pagesUpdated > 1
                 ? `Font diterapkan ke ${pagesUpdated} halaman. ${
