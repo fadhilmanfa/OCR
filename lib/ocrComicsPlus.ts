@@ -26,7 +26,7 @@ import type { BBox, OcrBox } from "./ocr";
 
 const execFileAsync = promisify(execFile);
 
-// ID engine yang dikirim dari UI (UploadForm) / query param (?ocrEngine=).
+// ID engine yang dikirim dari UI (ControlPanel) / query param (?ocrEngine=).
 // "tesseract" = default, kode lama, tidak diubah sama sekali.
 // "vision_llm" = Vision LLM via OpenRouter (lihat lib/ocrVisionLLM.ts).
 // "google_vision" = Google Cloud Vision API (lihat lib/ocrGoogleVision.ts).

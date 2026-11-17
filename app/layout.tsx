@@ -2,9 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Toaster } from "@/components/ui/sonner";
-import { BookOpenText } from "lucide-react";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -17,9 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Komik OCR — EN / JA / ID / ZH",
+  title: "Komik OCR — Terjemahkan komik",
   description:
-    "Upload JPG/PNG/ZIP → OCR Inggris/Jepang/Indonesia/Mandarin → translate → timpa teks terjemahan.",
+    "Unggah gambar atau arsip komik, pilih bahasa, lalu unduh hasil terjemahan sebagai ZIP atau PDF.",
 };
 
 export default function RootLayout({
@@ -38,20 +36,7 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <header className="border-b bg-background">
-            <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between px-4 sm:px-6">
-              <div className="flex items-center gap-2.5">
-                <span className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-md">
-                  <BookOpenText className="size-4" />
-                </span>
-                <span className="text-sm font-semibold tracking-tight">
-                  OCR
-                </span>
-              </div>
-              <ThemeToggle />
-            </div>
-          </header>
-          <main className="flex-1">{children}</main>
+          {children}
           <Toaster richColors closeButton position="top-center" />
         </ThemeProvider>
       </body>

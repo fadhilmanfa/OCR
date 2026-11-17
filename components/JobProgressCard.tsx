@@ -31,7 +31,7 @@ export default function JobProgressCard({
     <section aria-label="Progres pemrosesan" className="space-y-4">
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Memproses komik</h1>
+          <h2 className="text-2xl font-semibold tracking-tight">Memproses komik</h2>
           {status && (
             <p role="status" className="text-muted-foreground mt-1 truncate text-xs leading-relaxed">
               {status}

@@ -20,12 +20,16 @@ export default function PageCard({
   jobId,
   sourceLang,
   targetLang,
+  viewVersion = 0,
+  onJobSaved,
 }: {
   page: ProcessPage;
   index: number;
   jobId: string;
   sourceLang?: unknown;
   targetLang?: unknown;
+  viewVersion?: number;
+  onJobSaved?: (version: number) => void;
 }) {
   const src = LANG_SHORT[normalizeAppLang(sourceLang, "en")];
   const tgt = LANG_SHORT[normalizeAppLang(targetLang, "id")];
@@ -39,6 +43,7 @@ export default function PageCard({
   const [version, setVersion] = useState(0);
   const [notice, setNotice] = useState("");
   const undetected = page.undetected ?? 0;
+  const shownVersion = Math.max(version, viewVersion);
 
   return (
     <article className="space-y-4 border-t py-6 first:border-t-0 first:pt-0">
@@ -57,9 +62,9 @@ export default function PageCard({
       </div>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={version ? `${page.url}?v=${version}` : page.url}
+        src={shownVersion ? `${page.url}?v=${shownVersion}` : page.url}
         alt={isClean ? `Hasil pembersihan halaman ${index + 1}` : `Hasil terjemahan halaman ${index + 1}`}
-        className="bg-muted w-full rounded-md border object-contain"
+        className="bg-muted w-full border object-contain"
         loading="lazy"
       />
       <div className="flex flex-wrap items-center gap-2">
@@ -101,12 +106,17 @@ export default function PageCard({
           jobId={jobId}
           file={page.file}
           onClose={() => setEditing(false)}
-          onSaved={(v, archivesUpdated) => {
+          onSaved={(v, archivesUpdated, pagesUpdated) => {
             setVersion(v);
+            if (pagesUpdated > 1) onJobSaved?.(v);
             setNotice(
-              archivesUpdated
-                ? "Mask diterapkan. ZIP/PDF ikut diperbarui."
-                : "Mask diterapkan. ZIP/PDF gagal diperbarui — unduh ulang nanti.",
+              pagesUpdated > 1
+                ? `Font diterapkan ke ${pagesUpdated} halaman. ${
+                    archivesUpdated ? "ZIP/PDF ikut diperbarui." : "ZIP/PDF gagal diperbarui — unduh ulang nanti."
+                  }`
+                : archivesUpdated
+                  ? "Koreksi diterapkan. ZIP/PDF ikut diperbarui."
+                  : "Koreksi diterapkan. ZIP/PDF gagal diperbarui — unduh ulang nanti.",
             );
           }}
         />

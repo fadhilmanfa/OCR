@@ -13,10 +13,10 @@ export default function Downloads({
   return (
     <section aria-labelledby="download-title" className="space-y-5">
       <div>
-        <h1 id="download-title" className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+        <h2 id="download-title" className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
           <Download aria-hidden="true" className="size-5" />
           Hasil siap
-        </h1>
+        </h2>
         <p className="text-muted-foreground mt-1 text-sm">
           {result.pages.length} halaman · {src} → {tgt} · {result.provider}
         </p>
