@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { JobProgress, JobStage, PageProgress, ProcessResult } from "@/components/types";
+import type { JobProgress, JobStage, PageProgress, ProcessPage, ProcessResult } from "@/components/types";
 
-export const OUTPUT_TTL_MS = 10 * 60 * 1000;
+export const OUTPUT_TTL_MS = 30 * 60 * 1000;
 export const OUTPUT_DIR = path.resolve(process.cwd(), "outputs");
 const METADATA_FILE = ".job.json";
 const jobGlobal = globalThis as typeof globalThis & {
@@ -215,6 +215,25 @@ export function failJob(jobId: string, error: string): JobProgress | undefined {
     }
   }
   return job;
+}
+
+// Perbarui ringkasan satu halaman di result job setelah pindai ulang
+// (teks, via, jumlah bubble) lalu simpan metadata agar GET /api/jobs
+// mengembalikan data terbaru tanpa restart.
+export function updateJobResultPage(jobId: string, page: ProcessPage): void {
+  const job = jobs.get(jobId);
+  if (!job?.result) return;
+  job.result = {
+    ...job.result,
+    pages: job.result.pages.map((p) =>
+      p.file === page.file ? { ...p, ...page } : p,
+    ),
+  };
+  try {
+    persistJob(job);
+  } catch {
+    console.error(`[outputs] Gagal menyimpan hasil pindai ulang job ${jobId}.`);
+  }
 }
 
 export function destroyJob(jobId: string): boolean {

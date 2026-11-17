@@ -205,6 +205,14 @@ export async function processCollectedImages(
   // merender ulang halaman tanpa OCR/translate ulang. Folder ikut terhapus
   // otomatis bersama TTL job.
   const renderStore: RenderStore = { version: 1, pages: {} };
+  renderStore.settings = {
+    bubble: bubbleParam,
+    ocrEngine,
+    provider,
+    sourceLang,
+    targetLang,
+    mode: processMode,
+  };
   fs.mkdirSync(path.join(jobDir, SOURCE_DIR), { recursive: true });
   onEvent({
     percent: 10,
@@ -757,6 +765,7 @@ export async function processCollectedImages(
     }
     const items = boxes.map((b, k) => ({
       text: dstTexts[k],
+      sourceText: b.text,
       bbox: b.bbox,
       polygon: shapes[k]?.points,
       kind: shapes[k]?.kind,

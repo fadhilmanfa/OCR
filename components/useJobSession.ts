@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { JobProgress, ProcessResult } from "./types";
+import type { JobProgress, ProcessPage, ProcessResult } from "./types";
 import { normalizeAppLang, type AppLang } from "@/lib/languages";
 import {
   normalizeCleanMode,
@@ -70,7 +70,7 @@ function readSession(): Session {
       settings: {
         provider: ["auto", "openrouter", "opencode"].includes(settings?.provider) ? settings.provider : "auto",
         bubble: ["ogkalu", "psimera", "google", "0"].includes(settings?.bubble) ? settings.bubble : "ogkalu",
-        ocrEngine: ["tesseract", "comics_text_plus", "vision_llm", "google_vision"].includes(settings?.ocrEngine) ? settings.ocrEngine : "tesseract",
+        ocrEngine: ["tesseract", "vision_llm", "google_vision"].includes(settings?.ocrEngine) ? settings.ocrEngine : "tesseract",
         apiKey: typeof settings?.apiKey === "string" ? settings.apiKey : "",
         googleApiKey: typeof settings?.googleApiKey === "string" ? settings.googleApiKey : "",
         sourceLang: normalizeAppLang(settings?.sourceLang, "en"),
@@ -198,11 +198,24 @@ export function useJobSession() {
     };
   }, [result, clearJob]);
 
+  // Ganti ringkasan satu halaman setelah pindai ulang di editor (tanpa reload).
+  const updateResultPage = useCallback((page: ProcessPage) => {
+    setResult((prev) =>
+      prev
+        ? {
+            ...prev,
+            pages: prev.pages.map((p) => (p.file === page.file ? { ...p, ...page } : p)),
+          }
+        : prev,
+    );
+  }, []);
+
   return {
     ready, storageUnavailable, result, progress, status, busy, remainingSeconds,
     jobId: session.jobId,
     settings: session.settings,
     updateSettings: (settings: ProcessingSettings) => saveSession({ ...session, settings }),
+    updateResultPage,
     startNew: () => clearJob(),
     onJobStarted: (jobId: string) => {
       saveSession({ ...session, jobId });

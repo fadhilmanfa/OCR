@@ -1,4 +1,4 @@
-// Metadata render per halaman, disimpan bersama output job (TTL 10 menit).
+// Metadata render per halaman, disimpan bersama output job (TTL 30 menit).
 // Dipakai editor mask manual: butuh gambar ASLI + daftar terjemahan + mask
 // otomatis agar halaman bisa dirender ulang tanpa mengulang OCR/translate.
 import fs from "fs";
@@ -10,11 +10,24 @@ import type {
   OverlayItem,
   TextBoxOverride,
 } from "./overlay";
-import type { CleanMode } from "./cleanMode";
+import type { CleanMode, ProcessMode } from "./cleanMode";
 import type { FontChoice } from "./fonts";
+import type { AppLang } from "./languages";
+import type { OcrEngine } from "./ocrEngine";
 
 export const RENDER_FILE = ".render.json";
 export const SOURCE_DIR = ".src";
+
+// Setelan job saat halaman diproses; dipakai sebagai default panel
+// "Pindai ulang" di editor (job lama belum punya field ini).
+export interface JobSettings {
+  bubble: string;
+  ocrEngine: OcrEngine;
+  provider: string;
+  sourceLang: AppLang;
+  targetLang: AppLang;
+  mode: ProcessMode;
+}
 
 export interface StoredPage {
   file: string;
@@ -42,6 +55,8 @@ export interface RenderStore {
   version: 1;
   /** Font default seluruh job (dipakai kalau halaman tidak punya override). */
   font?: FontChoice;
+  /** Setelan pipeline saat proses awal (default untuk pindai ulang). */
+  settings?: JobSettings;
   pages: Record<string, StoredPage>;
 }
 
